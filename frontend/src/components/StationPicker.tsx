@@ -1,5 +1,4 @@
 import type { Station } from "../api";
-import { formatOffsetDuration } from "../time";
 
 interface Props {
   stations: Station[];
@@ -38,7 +37,7 @@ export function StationPicker({ stations, originId, destinationId, onChangeOrigi
           <option value="">Select origin</option>
           {stations.map((s) => (
             <option key={s.id} value={s.id}>
-              {s.name} ({formatOffsetDuration(s.offsetMinutes)})
+              {s.name}
             </option>
           ))}
         </select>
@@ -54,7 +53,7 @@ export function StationPicker({ stations, originId, destinationId, onChangeOrigi
           <option value="">Select destination</option>
           {destinationOptions.map((s) => (
             <option key={s.id} value={s.id}>
-              {s.name} ({formatOffsetDuration(s.offsetMinutes - (origin?.offsetMinutes ?? 0))} from origin)
+              {s.name}
             </option>
           ))}
         </select>

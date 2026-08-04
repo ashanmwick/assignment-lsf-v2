@@ -222,7 +222,6 @@ function App() {
 
   const originStation = stations.find((s) => s.id === originId) ?? null;
   const destinationStation = stations.find((s) => s.id === destinationId) ?? null;
-  const selectedTrip = visibleTrips.find((t) => t.id === selectedTripId) ?? null;
 
   const reservedCoaches = availability?.coaches.filter((c) => c.coachType === "reserved") ?? [];
   const unreservedCoaches = availability?.coaches.filter((c) => c.coachType === "unreserved") ?? [];
