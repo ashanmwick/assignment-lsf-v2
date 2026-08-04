@@ -1,0 +1,33 @@
+{
+  "name": "lsf-booking-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Segment-based train seat booking API (Colombo Fort-Badulla line)",
+  "main": "dist/server.js",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "migrate": "node-pg-migrate up",
+    "migrate:down": "node-pg-migrate down",
+    "seed": "tsx scripts/seed.ts"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "pg": "^8.12.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.14.9",
+    "@types/pg": "^8.11.6",
+    "node-pg-migrate": "^7.6.1",
+    "tsx": "^4.16.2",
+    "typescript": "^5.5.3"
+  }
+}
