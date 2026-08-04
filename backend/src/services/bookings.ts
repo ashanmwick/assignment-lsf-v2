@@ -17,6 +17,36 @@ interface TripStopRow {
   distance_km: string;
 }
 
+/** Every other endpoint in this API returns camelCase JSON; map booking rows
+ * (raw `RETURNING *` / `SELECT *` results, which are snake_case Postgres
+ * column names) to the same convention so the frontend has one consistent
+ * contract to work against. */
+function toBookingDto(row: Record<string, unknown>) {
+  return {
+    id: row.id,
+    tripId: row.trip_id,
+    coachId: row.coach_id,
+    seatId: row.seat_id,
+    passengerId: row.passenger_id,
+    originStationId: row.origin_station_id,
+    destinationStationId: row.destination_station_id,
+    originSeq: row.origin_seq,
+    destinationSeq: row.destination_seq,
+    fare: Number(row.fare),
+    status: row.status,
+    heldUntil: row.held_until,
+    createdAt: row.created_at,
+    ...(row.origin_station_name !== undefined && {
+      originStationName: row.origin_station_name,
+      destinationStationName: row.destination_station_name,
+      passengerName: row.passenger_name,
+      seatNumber: row.seat_number,
+      coachNumber: row.coach_number,
+      coachType: row.coach_type,
+    }),
+  };
+}
+
 /**
  * Creates a 'held' booking for one seat/leg inside a single transaction:
  * resolve the trip_stop rows for origin/destination, verify the seat's
@@ -112,7 +142,7 @@ export async function createHeldBooking(input: CreateBookingInput) {
           heldUntil,
         ]
       );
-      return rows[0];
+      return toBookingDto(rows[0]);
     } catch (err) {
       if (isPgError(err) && err.code === PG_EXCLUSION_VIOLATION) {
         throw Conflict(
@@ -134,11 +164,11 @@ export async function confirmBooking(bookingId: number) {
       [bookingId]
     );
 
-    if (rows[0]) return rows[0];
+    if (rows[0]) return toBookingDto(rows[0]);
 
     const existing = await getBookingWithClient(client, bookingId);
     if (!existing) throw NotFound(`Booking ${bookingId} not found`);
-    if (existing.status === "confirmed") return existing;
+    if (existing.status === "confirmed") return toBookingDto(existing);
     if (existing.status === "held") {
       throw Conflict(`Booking ${bookingId}'s hold has expired — the seat must be re-booked`);
     }
@@ -156,7 +186,7 @@ export async function cancelBooking(bookingId: number) {
       [bookingId]
     );
 
-    if (rows[0]) return rows[0];
+    if (rows[0]) return toBookingDto(rows[0]);
 
     const existing = await getBookingWithClient(client, bookingId);
     if (!existing) throw NotFound(`Booking ${bookingId} not found`);
@@ -182,5 +212,5 @@ export async function getBookingDetail(bookingId: number) {
      WHERE b.id = $1`,
     [bookingId]
   );
-  return rows[0] ?? null;
+  return rows[0] ? toBookingDto(rows[0]) : null;
 }
