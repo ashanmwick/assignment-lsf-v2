@@ -69,7 +69,7 @@ exists before writing anything.
 
 ## Design decisions and reasoning
  
-### Data model: half-open intervals, not per-station flags
+### 1. Data model: half-open intervals, not per-station flags
 
 In this system seat occupancy is modeled as a range `[origin_seq, destination_seq)` over a
 trip's stop sequence, rather than a boolean per station the seat passes
@@ -101,6 +101,76 @@ they share a stop, regardless of the distance or time between stops.
 | **Scales with trip length** | Constant (1 row regardless of stops) | Grows linearly with number of stops |
 
 ![Range model vs per-station flags](docs/images/range-vs-perstation.png)
+
+
+### 2. Concurrency: a database-level `EXCLUDE` constraint, not application locks
+Two people might try to book the same seat, on the same trip, for overlapping
+parts of the journey, at the same time. Only one should win.
+
+# The fix: let Postgres enforce it, not our code
+We add a special database rule (an `EXCLUDE` constraint) that says:
+ 
+> "For the same seat and the same trip, no two active bookings are allowed
+> to have overlapping travel ranges."
+ 
+Postgres checks this automatically, inside the database, every time a
+booking is inserted. We don't have to write that logic ourselves.
+ 
+### Why not do it in the app instead?
+Two common alternatives, and why we skipped them:
+ 
+- **Check-then-write in code ("optimistic locking")** — the app reads current
+  bookings, checks for overlap, then writes. Works, but it's easy to get
+  wrong (miss an edge case, forget a code path) and we'd be rebuilding
+  something Postgres already does reliably.
+- **A lock in Redis (or similar)** — adds a whole extra system to run and
+  keep in sync with the database, and you *still* need the same overlap
+  logic underneath it. It just moves the problem, doesn't remove it.
+Because the database is the single source of truth for this rule, it can't
+be bypassed by a bug elsewhere in the code. This is also the main reason
+we built one combined backend (a "modular monolith") instead of splitting
+booking into separate microservices — splitting it up would break this
+guarantee or make it much weaker.
+ 
+The rule only applies to bookings that are `held` or `confirmed`. Cancelled
+bookings don't block anyone.
+ 
+## What happens when two people race for the same seat
+Both requests try to insert a booking at the same time.
+ 
+1. Postgres lets the first one succeed.
+2. The second one fails with a specific database error (code `23P01`).
+3. Our server catches that error and sends the user a clean `409 Conflict`
+   response — not a scary raw database error.
+4. The frontend sees the `409` and refreshes seat availability right away,
+   so the user doesn't see a seat marked "available" that's actually gone.
+We have a test script (`scripts/concurrency-test.mjs`) that fires two
+overlapping bookings at once and checks that exactly one wins and one gets
+rejected.
+ 
+## Holding a seat before you confirm it
+When someone selects a seat, we don't wait until final checkout to reserve
+it. Instead we immediately create a `held` booking with an expiry time
+(`held_until`, default 7 minutes). This uses the *same* database rule above
+— no separate mechanism needed.
+ 
+This is the same pattern airlines and ticket sites (like Ticketmaster) use:
+reserve the seat the moment it's picked, so if there's a conflict, the user
+finds out right away instead of after filling in payment details.
+ 
+### Cleaning up expired holds
+If someone holds a seat and doesn't finish booking, that hold needs to go
+away eventually so others can use the seat. We handle this two ways:
+ 
+- **Right before booking that seat**: if there's an expired hold sitting on
+  the exact seat someone is trying to book, we clear it first — so it never
+  blocks a real request, even if the cleanup job hasn't run yet.
+- **A background job** that runs every 30 seconds and clears *all* expired
+  holds everywhere. This keeps things accurate for people just browsing
+  availability, not actively booking. (For a real production system, this
+  job would run as a proper scheduled task like `pg_cron`, so it survives
+  restarts and doesn't duplicate itself if we run multiple servers.)
+
 
 
 ## Repo layout
