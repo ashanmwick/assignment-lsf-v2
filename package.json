@@ -1,0 +1,13 @@
+{
+  "name": "lsf-booking-system",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Segment-based train seat booking system for the Colombo Fort-Badulla line",
+  "type": "module",
+  "scripts": {
+    "test:concurrency": "node scripts/concurrency-test.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
