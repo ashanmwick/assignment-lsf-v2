@@ -65,47 +65,60 @@ export function BookingPanel({
   };
 
   return (
-    <div className={`panel booking-panel booking-${booking.status}`}>
-      <h3>{booking.status === "confirmed" ? "Booking confirmed" : "Seat held"}</h3>
-      <dl>
-        <dt>Seat</dt>
-        <dd>{seatNumber}</dd>
-        <dt>Leg</dt>
-        <dd>
-          {originName} &rarr; {destinationName}
-        </dd>
-        <dt>Departs</dt>
-        <dd>{formatScheduledTime(booking.originScheduledDeparture)}</dd>
-        <dt>Arrives</dt>
-        <dd>{formatScheduledTime(booking.destinationScheduledArrival)}</dd>
-        <dt>Fare</dt>
-        <dd>Rs. {booking.fare.toFixed(2)}</dd>
-      </dl>
+    <div className={`booking-summary booking-${booking.status}`}>
+      <div className="booking-summary-details">
+        <div className="booking-summary-item">
+          <span className="booking-summary-label">Seat</span>
+          <span className="booking-summary-value">{seatNumber}</span>
+        </div>
+        <div className="booking-summary-item">
+          <span className="booking-summary-label">Leg</span>
+          <span className="booking-summary-value">
+            {originName} &rarr; {destinationName}
+          </span>
+        </div>
+        <div className="booking-summary-item">
+          <span className="booking-summary-label">Departs / Arrives</span>
+          <span className="booking-summary-value">
+            {formatScheduledTime(booking.originScheduledDeparture)} &rarr;{" "}
+            {formatScheduledTime(booking.destinationScheduledArrival)}
+          </span>
+        </div>
+        <div className="booking-summary-item">
+          <span className="booking-summary-label">Fare</span>
+          <span className="booking-summary-value booking-summary-fare">Rs. {booking.fare.toFixed(2)}</span>
+        </div>
+        {booking.status === "held" && (
+          <div className="booking-summary-item">
+            <span className="booking-summary-label">Hold expires</span>
+            <span className="booking-summary-value countdown">{formatCountdown(remainingMs)}</span>
+          </div>
+        )}
+        {booking.status === "confirmed" && <span className="booking-status-badge">Confirmed</span>}
+      </div>
 
-      {booking.status === "held" && (
-        <>
-          <p className="countdown">Hold expires in {formatCountdown(remainingMs)}</p>
-          <div className="booking-actions">
-            <button onClick={handleConfirm} disabled={busy}>
-              Confirm booking
-            </button>
+      <div className="booking-actions">
+        {booking.status === "held" && (
+          <>
             <button className="secondary" onClick={handleCancel} disabled={busy}>
               Release seat
             </button>
-          </div>
-        </>
-      )}
-
-      {booking.status === "confirmed" && (
-        <div className="booking-actions">
-          <button onClick={onBookAnother} disabled={busy}>
-            Book another seat
-          </button>
-          <button className="secondary" onClick={handleCancel} disabled={busy}>
-            Cancel booking
-          </button>
-        </div>
-      )}
+            <button onClick={handleConfirm} disabled={busy}>
+              Continue
+            </button>
+          </>
+        )}
+        {booking.status === "confirmed" && (
+          <>
+            <button className="secondary" onClick={handleCancel} disabled={busy}>
+              Cancel booking
+            </button>
+            <button onClick={onBookAnother} disabled={busy}>
+              Book another seat
+            </button>
+          </>
+        )}
+      </div>
 
       {error && <p className="error-text">{error}</p>}
     </div>

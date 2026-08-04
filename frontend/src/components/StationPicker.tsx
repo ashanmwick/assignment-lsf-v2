@@ -18,7 +18,7 @@ export function StationPicker({ stations, originId, destinationId, onChangeOrigi
   const destinationOptions = origin ? stations.filter((s) => s.sequence > origin.sequence) : stations;
 
   return (
-    <div className="panel">
+    <>
       <label>
         Origin
         <select
@@ -59,6 +59,6 @@ export function StationPicker({ stations, originId, destinationId, onChangeOrigi
           ))}
         </select>
       </label>
-    </div>
+    </>
   );
 }

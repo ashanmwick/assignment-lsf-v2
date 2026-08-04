@@ -7,7 +7,7 @@ import { PassengerBadge } from "./components/PassengerBadge";
 import { PassengerModal } from "./components/PassengerModal";
 import { StationPicker } from "./components/StationPicker";
 import { TimeRangePicker } from "./components/TimeRangePicker";
-import { TripPicker } from "./components/TripPicker";
+import { TrainList } from "./components/TrainList";
 import { SeatMap } from "./components/SeatMap";
 import { BookingPanel } from "./components/BookingPanel";
 
@@ -228,115 +228,121 @@ function App() {
   const unreservedCoaches = availability?.coaches.filter((c) => c.coachType === "unreserved") ?? [];
 
   const legChosen = originId !== null && destinationId !== null;
+  const showSeatStep = legChosen && !!selectedTripId;
 
   return (
     <div className="app">
       <header className="app-header">
         <h1>Colombo Fort &ndash; Badulla</h1>
-        {selectedTrip && originStation && destinationStation && (
-          <p className="trip-meta">
-            {selectedTrip.trainName} {selectedTrip.trainNumber ? `(${selectedTrip.trainNumber})` : ""} &middot;{" "}
-            {originStation.name} {formatScheduledTime(selectedTrip.originScheduledDeparture)} &rarr;{" "}
-            {destinationStation.name} {formatScheduledTime(selectedTrip.destinationScheduledArrival)} &middot;{" "}
-            {selectedTrip.serviceDate}
-          </p>
-        )}
+        <p className="trip-meta">
+          {selectedTrip && originStation && destinationStation ? (
+            <>
+              {selectedTrip.trainName} {selectedTrip.trainNumber ? `(${selectedTrip.trainNumber})` : ""} &middot;{" "}
+              {originStation.name} {formatScheduledTime(selectedTrip.originScheduledDeparture)} &rarr;{" "}
+              {destinationStation.name} {formatScheduledTime(selectedTrip.destinationScheduledArrival)} &middot;{" "}
+              {selectedTrip.serviceDate}
+            </>
+          ) : (
+            "Search for a train to see the schedule."
+          )}
+        </p>
       </header>
 
       {loadError && <div className="banner banner-error">{loadError}</div>}
+      {conflictMessage && (
+        <div className="banner banner-conflict">
+          {conflictMessage}
+          <button className="link-button" onClick={() => setConflictMessage(null)}>
+            dismiss
+          </button>
+        </div>
+      )}
 
-      <div className="app-body">
-        <aside className="sidebar">
-          <div className="panel">
-            <label>
-              Date
-              <input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} />
-            </label>
-          </div>
-
-          <StationPicker
-            stations={stations}
-            originId={originId}
-            destinationId={destinationId}
-            onChangeOrigin={setOriginId}
-            onChangeDestination={setDestinationId}
-          />
-
-          {!legChosen && <p className="hint">Choose an origin and destination to see available trains.</p>}
-
-          {legChosen && (
-            <>
-              <TimeRangePicker
-                from={departsAfter}
-                to={departsBefore}
-                onChangeFrom={setDepartsAfter}
-                onChangeTo={setDepartsBefore}
-              />
-              <TripPicker
-                trips={visibleTrips}
-                loading={matchingTripsLoading}
-                selectedTripId={selectedTripId}
-                onChangeTrip={setSelectedTripId}
-              />
-            </>
-          )}
-
-          {passenger && <PassengerBadge passenger={passenger} onChange={() => setPassenger(null)} />}
-
-          {activeBooking && originStation && destinationStation && (
-            <BookingPanel
-              booking={activeBooking.booking}
-              originName={originStation.name}
-              destinationName={destinationStation.name}
-              seatNumber={activeBooking.seatNumber}
-              onConfirm={handleConfirm}
-              onCancel={handleCancel}
-              onExpired={handleExpired}
-              onBookAnother={() => setActiveBooking(null)}
-            />
-          )}
-
-          {bookingError && <p className="error-text">{bookingError}</p>}
-        </aside>
-
-        <main className="main-panel">
-          {conflictMessage && (
-            <div className="banner banner-conflict">
-              {conflictMessage}
-              <button className="link-button" onClick={() => setConflictMessage(null)}>
-                dismiss
-              </button>
-            </div>
-          )}
-
-          {legChosen && !matchingTripsLoading && visibleTrips.length === 0 && (
-            <div className="panel">
-              No trains run this leg on {selectedDate || "any seeded date"}
-              {(departsAfter || departsBefore) && " in the selected time range"}. Try a different
-              {matchingTrips.length > 0 && !visibleTrips.length ? " time range" : " date"}.
-            </div>
-          )}
-
-          {availabilityLoading && <p className="hint">Loading seat map...</p>}
-
-          {!availabilityLoading && availability && (
-            <SeatMap
-              reservedCoaches={reservedCoaches}
-              unreservedCoaches={unreservedCoaches}
-              onSelectSeat={handleSelectSeat}
-              disabled={bookingInFlight || pendingSeat !== null || activeBooking?.booking.status === "held"}
-            />
-          )}
-
-          {!availabilityLoading && !availability && legChosen && visibleTrips.length > 0 && (
-            <div className="panel">Select a train to see the seat map.</div>
-          )}
-
-          {!availabilityLoading && !availability && !legChosen && (
-            <div className="panel">Select an origin and destination to get started.</div>
-          )}
-        </main>
+      <div className="filter-bar panel">
+        <label>
+          Date
+          <input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} />
+        </label>
+        <StationPicker
+          stations={stations}
+          originId={originId}
+          destinationId={destinationId}
+          onChangeOrigin={setOriginId}
+          onChangeDestination={setDestinationId}
+        />
+        <TimeRangePicker
+          from={departsAfter}
+          to={departsBefore}
+          onChangeFrom={setDepartsAfter}
+          onChangeTo={setDepartsBefore}
+        />
       </div>
+
+      {!legChosen && <p className="hint">Choose an origin and destination to see available trains.</p>}
+
+      {legChosen && (
+        <TrainList
+          trips={visibleTrips}
+          loading={matchingTripsLoading}
+          selectedTripId={selectedTripId}
+          onChangeTrip={setSelectedTripId}
+        />
+      )}
+
+      {legChosen && !matchingTripsLoading && visibleTrips.length === 0 && (
+        <div className="panel">
+          No trains run this leg on {selectedDate || "any seeded date"}
+          {(departsAfter || departsBefore) && " in the selected time range"}. Try a different
+          {matchingTrips.length > 0 && !visibleTrips.length ? " time range" : " date"}.
+        </div>
+      )}
+
+      {availabilityLoading && <p className="hint">Loading seat map...</p>}
+
+      {!availabilityLoading && availability && (
+        <SeatMap
+          reservedCoaches={reservedCoaches}
+          unreservedCoaches={unreservedCoaches}
+          onSelectSeat={handleSelectSeat}
+          disabled={bookingInFlight || pendingSeat !== null || activeBooking?.booking.status === "held"}
+        />
+      )}
+
+      {!availabilityLoading && !availability && showSeatStep && (
+        <div className="panel">Loading seat map...</div>
+      )}
+
+      {!availabilityLoading && !availability && !legChosen && (
+        <div className="panel">Select an origin and destination to get started.</div>
+      )}
+
+      {bookingError && <p className="error-text">{bookingError}</p>}
+
+      {showSeatStep && (
+        <div className="booking-summary-bar">
+          <div className="booking-summary-bar-inner">
+            {passenger && <PassengerBadge passenger={passenger} onChange={() => setPassenger(null)} />}
+
+            {activeBooking && originStation && destinationStation ? (
+              <BookingPanel
+                booking={activeBooking.booking}
+                originName={originStation.name}
+                destinationName={destinationStation.name}
+                seatNumber={activeBooking.seatNumber}
+                onConfirm={handleConfirm}
+                onCancel={handleCancel}
+                onExpired={handleExpired}
+                onBookAnother={() => setActiveBooking(null)}
+              />
+            ) : (
+              <div className="booking-summary booking-empty">
+                <span className="booking-summary-label">No seat selected yet</span>
+                <button disabled>Continue</button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {pendingSeat && (
         <PassengerModal
