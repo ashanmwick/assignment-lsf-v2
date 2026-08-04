@@ -4,6 +4,18 @@ import { BadRequest } from "../errors";
 
 export const stationsRouter = Router();
 
+// GET /api/routes — list every route. The frontend picks origin/destination
+// against a route's stations before it knows which trip it'll end up
+// booking, so routes need to be discoverable independent of any trip.
+stationsRouter.get("/routes", async (_req, res, next) => {
+  try {
+    const { rows } = await pool.query(`SELECT id, name FROM route ORDER BY id ASC`);
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /api/routes/:routeId/stations — ordered list of stations on the route.
 stationsRouter.get("/routes/:routeId/stations", async (req, res, next) => {
   try {

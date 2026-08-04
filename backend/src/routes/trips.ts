@@ -4,10 +4,15 @@ import { BadRequest, NotFound } from "../errors";
 
 export const tripsRouter = Router();
 
-// GET /api/trips?routeId=&date= — list trips, optionally filtered.
+// GET /api/trips?routeId=&date=&origin=&destination= — list trips, optionally
+// filtered. When origin and destination (station ids) are both given, only
+// trips that actually stop at both — in that order — are returned. This is
+// deliberately a stop-level check against trip_stop, not just "same route":
+// a trip's stops are seeded from route_station but aren't permanently bound
+// to it (schema-v1.md), so a trip could in principle skip a stop.
 tripsRouter.get("/trips", async (req, res, next) => {
   try {
-    const { routeId, date } = req.query;
+    const { routeId, date, origin, destination } = req.query;
     const conditions: string[] = [];
     const params: unknown[] = [];
 
@@ -18,6 +23,25 @@ tripsRouter.get("/trips", async (req, res, next) => {
     if (date !== undefined) {
       params.push(String(date));
       conditions.push(`trip.service_date = $${params.length}`);
+    }
+
+    if (origin !== undefined || destination !== undefined) {
+      const originId = Number(origin);
+      const destinationId = Number(destination);
+      if (!Number.isInteger(originId) || !Number.isInteger(destinationId)) {
+        throw BadRequest("origin and destination must both be provided together as station ids");
+      }
+      params.push(originId, destinationId);
+      const originParam = params.length - 1;
+      const destinationParam = params.length;
+      conditions.push(
+        `EXISTS (
+           SELECT 1 FROM trip_stop os, trip_stop ds
+           WHERE os.trip_id = trip.id AND os.station_id = $${originParam}
+             AND ds.trip_id = trip.id AND ds.station_id = $${destinationParam}
+             AND os.sequence < ds.sequence
+         )`
+      );
     }
 
     const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
