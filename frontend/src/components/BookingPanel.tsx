@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { Booking } from "../api";
+import { formatScheduledTime } from "../time";
 
 interface Props {
   booking: Booking;
@@ -73,6 +74,10 @@ export function BookingPanel({
         <dd>
           {originName} &rarr; {destinationName}
         </dd>
+        <dt>Departs</dt>
+        <dd>{formatScheduledTime(booking.originScheduledDeparture)}</dd>
+        <dt>Arrives</dt>
+        <dd>{formatScheduledTime(booking.destinationScheduledArrival)}</dd>
         <dt>Fare</dt>
         <dd>Rs. {booking.fare.toFixed(2)}</dd>
       </dl>

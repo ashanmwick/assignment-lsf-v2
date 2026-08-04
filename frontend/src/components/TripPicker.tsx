@@ -1,4 +1,5 @@
 import type { Trip } from "../api";
+import { formatScheduledTime } from "../time";
 
 interface Props {
   trips: Trip[];
@@ -20,7 +21,8 @@ export function TripPicker({ trips, loading, selectedTripId, onChangeTrip }: Pro
           {trips.length === 0 && <option value="">{loading ? "Loading..." : "No trains for this leg"}</option>}
           {trips.map((t) => (
             <option key={t.id} value={t.id}>
-              {t.trainName} ({t.trainNumber}) &middot; departs {t.departureTime.slice(0, 5)}
+              {t.trainName} ({t.trainNumber}) &middot; {formatScheduledTime(t.originScheduledDeparture)} &rarr;{" "}
+              {formatScheduledTime(t.destinationScheduledArrival)}
             </option>
           ))}
         </select>

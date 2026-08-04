@@ -35,6 +35,9 @@ export interface Station {
   code: string | null;
   sequence: number;
   distanceKm: number;
+  /** Minutes from the route's nominal start — a schedule template, not an
+   * absolute time (no trip is in view at the station-picker stage). */
+  offsetMinutes: number;
 }
 
 export interface Trip {
@@ -46,6 +49,10 @@ export interface Trip {
   trainNumber: string | null;
   departureTime: string;
   serviceDate: string;
+  /** Only present when the trip list was fetched with an origin+destination
+   * filter — the requested leg's scheduled departure/arrival. */
+  originScheduledDeparture: string | null;
+  destinationScheduledArrival: string | null;
 }
 
 export type SeatStatus = "available" | "held" | "confirmed";
@@ -70,8 +77,8 @@ export interface AvailabilityCoach {
 
 export interface Availability {
   tripId: number;
-  origin: { stationId: number; sequence: number; distanceKm: number };
-  destination: { stationId: number; sequence: number; distanceKm: number };
+  origin: { stationId: number; sequence: number; distanceKm: number; scheduledDeparture: string | null };
+  destination: { stationId: number; sequence: number; distanceKm: number; scheduledArrival: string | null };
   coaches: AvailabilityCoach[];
 }
 
@@ -96,6 +103,8 @@ export interface Booking {
   status: "held" | "confirmed" | "cancelled";
   heldUntil: string | null;
   createdAt: string;
+  originScheduledDeparture: string | null;
+  destinationScheduledArrival: string | null;
 }
 
 export const api = {

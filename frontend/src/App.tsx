@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import "./App.css";
 import { ApiError, api } from "./api";
 import type { Availability, AvailabilitySeat, Booking, Passenger, Station, Trip } from "./api";
+import { formatScheduledTime } from "./time";
 import { PassengerForm } from "./components/PassengerForm";
 import { StationPicker } from "./components/StationPicker";
 import { TripPicker } from "./components/TripPicker";
@@ -186,10 +187,12 @@ function App() {
     <div className="app">
       <header className="app-header">
         <h1>Colombo Fort &ndash; Badulla</h1>
-        {selectedTrip && (
+        {selectedTrip && originStation && destinationStation && (
           <p className="trip-meta">
-            {selectedTrip.trainName} {selectedTrip.trainNumber ? `(${selectedTrip.trainNumber})` : ""} &middot;
-            departs {selectedTrip.departureTime.slice(0, 5)} &middot; {selectedTrip.serviceDate}
+            {selectedTrip.trainName} {selectedTrip.trainNumber ? `(${selectedTrip.trainNumber})` : ""} &middot;{" "}
+            {originStation.name} {formatScheduledTime(selectedTrip.originScheduledDeparture)} &rarr;{" "}
+            {destinationStation.name} {formatScheduledTime(selectedTrip.destinationScheduledArrival)} &middot;{" "}
+            {selectedTrip.serviceDate}
           </p>
         )}
       </header>
