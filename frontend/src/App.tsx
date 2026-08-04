@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import "./App.css";
 import { ApiError, api } from "./api";
 import type { Availability, AvailabilitySeat, Booking, Passenger, Station, Trip } from "./api";
 import { formatScheduledTime } from "./time";
-import { PassengerForm } from "./components/PassengerForm";
+import { PassengerBadge } from "./components/PassengerBadge";
+import { PassengerModal } from "./components/PassengerModal";
 import { StationPicker } from "./components/StationPicker";
+import { TimeRangePicker } from "./components/TimeRangePicker";
 import { TripPicker } from "./components/TripPicker";
 import { SeatMap } from "./components/SeatMap";
 import { BookingPanel } from "./components/BookingPanel";
@@ -24,10 +26,13 @@ function App() {
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const [passenger, setPassenger] = useState<Passenger | null>(null);
+  const [pendingSeat, setPendingSeat] = useState<AvailabilitySeat | null>(null);
 
   const [selectedDate, setSelectedDate] = useState<string>(todayDateString());
   const [originId, setOriginId] = useState<number | null>(null);
   const [destinationId, setDestinationId] = useState<number | null>(null);
+  const [departsAfter, setDepartsAfter] = useState<string>("");
+  const [departsBefore, setDepartsBefore] = useState<string>("");
 
   const [matchingTrips, setMatchingTrips] = useState<Trip[]>([]);
   const [matchingTripsLoading, setMatchingTripsLoading] = useState(false);
@@ -62,13 +67,12 @@ function App() {
     })();
   }, []);
 
-  // Once the passenger has picked a date + a complete leg, look up which
-  // trains actually run that leg on that date — origin/destination drive
-  // trip discovery, not the other way around.
+  // Once a date + a complete leg is chosen, look up which trains actually
+  // run that leg on that date — origin/destination drive trip discovery,
+  // not the other way around.
   useEffect(() => {
     if (routeId === null || originId === null || destinationId === null) {
       setMatchingTrips([]);
-      setSelectedTripId(null);
       return;
     }
     (async () => {
@@ -81,7 +85,6 @@ function App() {
           destinationStationId: destinationId,
         });
         setMatchingTrips(trips);
-        setSelectedTripId(trips[0]?.id ?? null);
         setLoadError(null);
       } catch (err) {
         setLoadError(err instanceof Error ? err.message : "Failed to load trains for this leg");
@@ -90,6 +93,29 @@ function App() {
       }
     })();
   }, [routeId, selectedDate, originId, destinationId]);
+
+  // Narrow the leg's trains down to the requested departure time-of-day
+  // range. Filtered client-side against the (small, already-fetched) leg
+  // match list rather than round-tripping to the server again.
+  const visibleTrips = useMemo(() => {
+    if (!departsAfter && !departsBefore) return matchingTrips;
+    return matchingTrips.filter((t) => {
+      const time = formatScheduledTime(t.originScheduledDeparture);
+      if (departsAfter && time < departsAfter) return false;
+      if (departsBefore && time > departsBefore) return false;
+      return true;
+    });
+  }, [matchingTrips, departsAfter, departsBefore]);
+
+  // Keep the selected train in sync with whatever's currently visible:
+  // default to the first match, but only reset it when the previous
+  // selection has actually fallen out of view.
+  useEffect(() => {
+    setSelectedTripId((current) => {
+      if (current !== null && visibleTrips.some((t) => t.id === current)) return current;
+      return visibleTrips[0]?.id ?? null;
+    });
+  }, [visibleTrips]);
 
   // Changing the leg invalidates anything already held on the old leg/trip.
   useEffect(() => {
@@ -116,17 +142,8 @@ function App() {
     refreshAvailability();
   }, [refreshAvailability]);
 
-  const handleSelectSeat = async (seat: AvailabilitySeat) => {
-    // Guard against a burst of clicks on different seats landing before the
-    // first request's response disables the seat map: without this, each
-    // click fires an independent POST /api/bookings for a *different* seat
-    // (no conflict, since they don't overlap each other), all of which
-    // succeed — but React state can only track one as `activeBooking`, so
-    // the rest become invisible holds nobody can see or release from the
-    // UI. Setting this synchronously, before the `await`, closes that
-    // window; the seat map's `disabled` prop reflects it immediately.
-    if (bookingInFlight) return;
-    if (selectedTripId === null || !passenger || originId === null || destinationId === null) return;
+  const bookSeat = async (seat: AvailabilitySeat, bookingPassenger: Passenger) => {
+    if (selectedTripId === null || originId === null || destinationId === null) return;
     setBookingInFlight(true);
     setConflictMessage(null);
     setBookingError(null);
@@ -134,7 +151,7 @@ function App() {
       const booking = await api.createBooking({
         tripId: selectedTripId,
         seatId: seat.seatId,
-        passengerId: passenger.id,
+        passengerId: bookingPassenger.id,
         originStationId: originId,
         destinationStationId: destinationId,
       });
@@ -152,6 +169,35 @@ function App() {
     } finally {
       setBookingInFlight(false);
     }
+  };
+
+  const handleSelectSeat = async (seat: AvailabilitySeat) => {
+    // Guard against a burst of clicks on different seats landing before the
+    // first request's response disables the seat map: without this, each
+    // click fires an independent POST /api/bookings for a *different* seat
+    // (no conflict, since they don't overlap each other), all of which
+    // succeed — but React state can only track one as `activeBooking`, so
+    // the rest become invisible holds nobody can see or release from the
+    // UI. Setting this synchronously, before the `await`, closes that
+    // window; the seat map's `disabled` prop reflects it immediately.
+    if (bookingInFlight || pendingSeat) return;
+    if (selectedTripId === null || originId === null || destinationId === null) return;
+
+    if (!passenger) {
+      // Don't ask for passenger details until the moment they're actually
+      // needed — right before this seat's hold is created — rather than
+      // upfront when the page loads.
+      setPendingSeat(seat);
+      return;
+    }
+    await bookSeat(seat, passenger);
+  };
+
+  const handlePassengerModalSubmit = async (newPassenger: Passenger) => {
+    setPassenger(newPassenger);
+    const seat = pendingSeat;
+    setPendingSeat(null);
+    if (seat) await bookSeat(seat, newPassenger);
   };
 
   const handleConfirm = async () => {
@@ -176,7 +222,7 @@ function App() {
 
   const originStation = stations.find((s) => s.id === originId) ?? null;
   const destinationStation = stations.find((s) => s.id === destinationId) ?? null;
-  const selectedTrip = matchingTrips.find((t) => t.id === selectedTripId) ?? null;
+  const selectedTrip = visibleTrips.find((t) => t.id === selectedTripId) ?? null;
 
   const reservedCoaches = availability?.coaches.filter((c) => c.coachType === "reserved") ?? [];
   const unreservedCoaches = availability?.coaches.filter((c) => c.coachType === "unreserved") ?? [];
@@ -201,12 +247,6 @@ function App() {
 
       <div className="app-body">
         <aside className="sidebar">
-          <PassengerForm
-            passenger={passenger}
-            onPassengerCreated={setPassenger}
-            onReset={() => setPassenger(null)}
-          />
-
           <div className="panel">
             <label>
               Date
@@ -225,15 +265,23 @@ function App() {
           {!legChosen && <p className="hint">Choose an origin and destination to see available trains.</p>}
 
           {legChosen && (
-            <TripPicker
-              trips={matchingTrips}
-              loading={matchingTripsLoading}
-              selectedTripId={selectedTripId}
-              onChangeTrip={setSelectedTripId}
-            />
+            <>
+              <TimeRangePicker
+                from={departsAfter}
+                to={departsBefore}
+                onChangeFrom={setDepartsAfter}
+                onChangeTo={setDepartsBefore}
+              />
+              <TripPicker
+                trips={visibleTrips}
+                loading={matchingTripsLoading}
+                selectedTripId={selectedTripId}
+                onChangeTrip={setSelectedTripId}
+              />
+            </>
           )}
 
-          {!passenger && <p className="hint">Enter your name to start booking a seat.</p>}
+          {passenger && <PassengerBadge passenger={passenger} onChange={() => setPassenger(null)} />}
 
           {activeBooking && originStation && destinationStation && (
             <BookingPanel
@@ -261,9 +309,11 @@ function App() {
             </div>
           )}
 
-          {legChosen && !matchingTripsLoading && matchingTrips.length === 0 && (
+          {legChosen && !matchingTripsLoading && visibleTrips.length === 0 && (
             <div className="panel">
-              No trains run this leg on {selectedDate || "any seeded date"}. Try a different date.
+              No trains run this leg on {selectedDate || "any seeded date"}
+              {(departsAfter || departsBefore) && " in the selected time range"}. Try a different
+              {matchingTrips.length > 0 && !visibleTrips.length ? " time range" : " date"}.
             </div>
           )}
 
@@ -274,11 +324,11 @@ function App() {
               reservedCoaches={reservedCoaches}
               unreservedCoaches={unreservedCoaches}
               onSelectSeat={handleSelectSeat}
-              disabled={!passenger || bookingInFlight || activeBooking?.booking.status === "held"}
+              disabled={bookingInFlight || pendingSeat !== null || activeBooking?.booking.status === "held"}
             />
           )}
 
-          {!availabilityLoading && !availability && legChosen && matchingTrips.length > 0 && (
+          {!availabilityLoading && !availability && legChosen && visibleTrips.length > 0 && (
             <div className="panel">Select a train to see the seat map.</div>
           )}
 
@@ -287,6 +337,14 @@ function App() {
           )}
         </main>
       </div>
+
+      {pendingSeat && (
+        <PassengerModal
+          seatNumber={pendingSeat.seatNumber}
+          onSubmit={handlePassengerModalSubmit}
+          onCancel={() => setPendingSeat(null)}
+        />
+      )}
     </div>
   );
 }
