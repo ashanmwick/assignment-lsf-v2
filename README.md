@@ -79,11 +79,74 @@ are tracked in their own table, and the seed script checks what already
 exists before writing anything.
 
 
+## Design decisions and reasoning
+ 
+### Data model: half-open intervals, not per-station flags
+
+
 ## Repo layout
 
 ```
-backend/    Express API, migrations, seed script, Dockerfile
-frontend/   React + Vite frontend, Dockerfile (multi-stage: build -> nginx)
-scripts/    Black-box concurrency test
-docker-compose.yml   Local Postgres + migrate/seed (one-shot) + backend + frontend
+.
+├── docker-compose.yml          Local Postgres + migrate/seed (one-shot) + backend + frontend
+├── .env.example                Optional DATABASE_URL override for docker-compose (point at real Supabase)
+├── package.json                Root scripts: npm run test:concurrency
+│
+├── backend/                    Express API (TypeScript, hand-written SQL via pg)
+│   ├── Dockerfile              Single image, reused for migrate/seed/serve via command override
+│   ├── .dockerignore
+│   ├── .env.example            DATABASE_URL, PORT, CORS_ORIGIN, HOLD_DURATION_MINUTES, SWEEPER_INTERVAL_SECONDS
+│   ├── package.json            Scripts
+│   ├── tsconfig.json
+│   ├── migrations/             node-pg-migrate migration files (raw SQL, no ORM)
+│   │   ├── 1706000000000_init.cjs                  Core schema: station/route/trip/coach/seat/booking + EXCLUDE constraint
+│   │   └── 1706000100000_add_scheduled_times.cjs   Adds route_station.offset_minutes, trip_stop.scheduled_arrival/departure
+│   ├── scripts/
+│   │   └── seed.ts             Database population script : stations, route, trains, coaches/seats, fare rules, trips
+│   └── src/
+│       ├── server.ts           Express app wiring, error middleware, starts the sweeper
+│       ├── config.ts           Env-driven config (port, CORS origin, hold duration, sweeper interval)
+│       ├── db.ts                Pool setup, withTransaction() helper, DATABASE_URL fail-fast check
+│       ├── errors.ts           AppError + PG_EXCLUSION_VIOLATION (23P01) helpers
+│       ├── sweeper.ts          Background job that cancels globally expired 'held' bookings
+│       ├── routes/
+│       │   ├── stations.ts     GET /api/routes, GET /api/routes/:routeId/stations
+│       │   ├── trips.ts        GET /api/trips (date/leg-filtered), GET /api/trips/:id, GET .../availability
+│       │   ├── bookings.ts     POST /api/bookings, POST .../confirm, DELETE /api/bookings/:id, GET /api/bookings/:id
+│       │   └── passengers.ts   POST /api/passengers
+│       └── services/
+│           └── bookings.ts     Transactional booking logic: lazy sweep, fare calc, 23P01 -> 409 translation
+│
+├── frontend/                   React + TypeScript + Vite
+│   ├── Dockerfile               Multi-stage: vite build -> nginx serving the static bundle
+│   ├── .dockerignore
+│   ├── .env.example             VITE_API_URL
+│   ├── package.json
+│   ├── vite.config.ts
+│   ├── index.html
+│   └── src/
+│       ├── main.tsx
+│       ├── App.tsx              Top-level flow: date -> origin/destination -> train -> seat -> pay
+│       ├── App.css              All app styles (filter bar, train list, seat map, bottom booking bar, modals)
+│       ├── index.css            CSS reset + theme variables
+│       ├── api.ts               Typed fetch client for the backend API
+│       ├── time.ts              Sri Lanka-timezone-aware time/duration formatting helpers
+│       └── components/
+│           ├── StationPicker.tsx    Origin/destination <select> pair
+│           ├── TimeRangePicker.tsx  Departs-after / departs-before filter
+│           ├── TrainList.tsx        Clickable list of trains matching the current filters
+│           ├── SeatMap.tsx          Coach tabs, legend, seat grid (per-coach availability)
+│           ├── PassengerModal.tsx   Name + mobile number, then dummy OTP verification
+│           ├── PassengerBadge.tsx   "Booking as X" indicator once a passenger is set
+│           └── BookingPanel.tsx     Sticky bottom bar: held/confirmed summary, countdown, Pay Now
+│
+├── scripts/
+│   └── concurrency-test.mjs    Black-box test: races two bookings for the same seat, asserts 201 + 409
+│
+├── docs/
+│   └── DATABASE-SCHEMA.md      Full entity-by-entity schema reference and constraint rationale
+│
+└── .claude/
+    └── launch.json             Dev-server config for the in-editor browser preview (not part of the app)
 ```
+
