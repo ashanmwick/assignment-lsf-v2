@@ -71,12 +71,36 @@ exists before writing anything.
  
 ### Data model: half-open intervals, not per-station flags
 
+In this system seat occupancy is modeled as a range `[origin_seq, destination_seq)` over a
+trip's stop sequence, rather than a boolean per station the seat passes
+through. A passenger going Colombo Fort → Kandy occupies the seat for
+`[0, 8)`; a later passenger going Kandy → Badulla occupies `[8, 19)`. These
+don't overlap, so both bookings can stand on the same seat without any issue.
+ 
+The alternative — a row per seat per station, flipped to "occupied" for
+every station the passenger passes — works but turns every booking and
+every availability check into an operation over N station-rows instead of
+one range comparison, and turns overlap detection into application code
+that has to reason about a set of flags instead of letting the database
+compare two intervals directly. Ranges also compose naturally with
+Postgres's built-in range types and GiST indexing (below), which per-station
+flags don't.
+ 
+`sequence` (not distance or time) is the unit ranges are expressed in,
+because it's what "overlap" actually means here: two legs conflict iff
+they share a stop, regardless of the distance or time between stops.
 
+| | Range model (`[origin_seq, dest_seq)`) | Per-station flags |
+|---|---|---|
+| **Rows per booking** | 1 | One per station passed (8–19) |
+| **Overlap check** | 1 range comparison | Loop over every shared station |
+| **Who enforces it** | Postgres `EXCLUDE` + GiST index | Application code you write |
+| **Race-condition safety** | Guaranteed by the DB constraint | Depends on your locking logic |
+| **Adjacent bookings (e.g. both "touch" Kandy)** | Handled natively via half-open intervals | Must hand-code the arrival-vs-departure rule |
+| **Failure mode on partial write** | Single INSERT, atomic | Multi-row batch can fail halfway through |
+| **Scales with trip length** | Constant (1 row regardless of stops) | Grows linearly with number of stops |
 
-
-
-
-
+![Range model vs per-station flags](docs/images/range-vs-perstation.png)
 
 
 ## Repo layout
