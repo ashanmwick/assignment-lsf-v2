@@ -28,20 +28,30 @@ async function jsonFetch(path, options) {
 async function main() {
   console.log(`Concurrency test against ${API_BASE}\n`);
 
-  const trips = await jsonFetch("/api/trips");
-  if (trips.status !== 200 || !Array.isArray(trips.body) || trips.body.length === 0) {
-    throw new Error(
-      "No trips found. Is the backend running (npm run dev) and seeded (npm run seed)?"
-    );
+  const routes = await jsonFetch("/api/routes");
+  if (routes.status !== 200 || !Array.isArray(routes.body) || routes.body.length === 0) {
+    throw new Error("No routes found. Is the backend running (npm run dev) and seeded (npm run seed)?");
   }
-  const trip = trips.body[0];
+  const route = routes.body[0];
 
-  const stations = await jsonFetch(`/api/routes/${trip.routeId}/stations`);
+  const stations = await jsonFetch(`/api/routes/${route.id}/stations`);
   if (stations.status !== 200 || stations.body.length < 3) {
     throw new Error("Route needs at least 3 stations for this test to pick a non-trivial leg.");
   }
   const origin = stations.body[0];
   const destination = stations.body[2];
+
+  // Trips can run in either direction (e.g. a northbound service reverses
+  // the route's station order), so ask the API which trips actually serve
+  // this specific directed leg rather than assuming the first trip in an
+  // unfiltered list happens to match origin -> destination.
+  const trips = await jsonFetch(
+    `/api/trips?routeId=${route.id}&origin=${origin.id}&destination=${destination.id}`
+  );
+  if (trips.status !== 200 || !Array.isArray(trips.body) || trips.body.length === 0) {
+    throw new Error(`No trips found serving ${origin.name} -> ${destination.name}. Try re-seeding.`);
+  }
+  const trip = trips.body[0];
 
   const availability = await jsonFetch(
     `/api/trips/${trip.id}/availability?origin=${origin.id}&destination=${destination.id}`

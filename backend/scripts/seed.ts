@@ -51,20 +51,24 @@ const FARE_RULES = [
   { coachType: "unreserved", ratePerKm: 2.2 },
 ];
 
-// Two real named trains that run this line, each scheduled across the next
-// few days — enough for the frontend's date filter / trip picker to have
-// something to pick between, without pretending to be a full timetable.
-const TRAIN_DEFS = [
-  { name: "Podi Menike", number: "1005" },
-  { name: "Udarata Menike", number: "1015" },
-];
+type Direction = "southbound" | "northbound";
 
-const TRIP_SPECS: { trainName: string; departureTime: string; dayOffset: number }[] = [0, 1, 2].flatMap(
-  (dayOffset) => [
-    { trainName: "Podi Menike", departureTime: "05:55:00", dayOffset },
-    { trainName: "Udarata Menike", departureTime: "08:35:00", dayOffset },
-  ]
-);
+// Real named trains that run this line in both directions — southbound
+// (Colombo Fort -> Badulla) and northbound (Badulla -> Colombo Fort) are
+// genuinely separate trips (different train_number, like real up/down
+// services), each scheduled across the next few days.
+const TRIP_SPECS: {
+  trainName: string;
+  trainNumber: string;
+  departureTime: string;
+  dayOffset: number;
+  direction: Direction;
+}[] = [0, 1, 2].flatMap((dayOffset) => [
+  { trainName: "Podi Menike", trainNumber: "1005", departureTime: "05:55:00", dayOffset, direction: "southbound" },
+  { trainName: "Udarata Menike", trainNumber: "1015", departureTime: "08:35:00", dayOffset, direction: "southbound" },
+  { trainName: "Podi Menike", trainNumber: "1006", departureTime: "08:30:00", dayOffset, direction: "northbound" },
+  { trainName: "Udarata Menike", trainNumber: "1016", departureTime: "05:20:00", dayOffset, direction: "northbound" },
+]);
 
 function seatLayout(index: number): { seatNumber: string; row: number; column: number; seatType: string } {
   const seatsPerRow = 4;
@@ -99,6 +103,44 @@ interface StationRow {
   sequence: number;
   distanceKm: number;
   offsetMinutes: number;
+}
+
+interface StopSpec {
+  id: number;
+  sequence: number;
+  distanceKm: number;
+  offsetMinutes: number;
+}
+
+/**
+ * Builds the ordered stop list for one direction of travel. Southbound
+ * reuses route_station's own sequence/distance/offset directly (Colombo
+ * Fort = 0km). Northbound re-bases everything from the *other* end
+ * (Badulla = 0km) and renumbers sequence 1..N along the reversed path —
+ * trip_stop is deliberately "seeded from route_station but not permanently
+ * bound to it" (schema-v1.md) specifically so a trip can travel a route
+ * backwards like this without any schema change.
+ */
+function buildStops(stations: StationRow[], direction: Direction): StopSpec[] {
+  if (direction === "southbound") {
+    return stations.map((s) => ({
+      id: s.id,
+      sequence: s.sequence,
+      distanceKm: s.distanceKm,
+      offsetMinutes: s.offsetMinutes,
+    }));
+  }
+
+  const totalDistanceKm = stations[stations.length - 1].distanceKm;
+  return [...stations].reverse().map((s, index) => {
+    const distanceKm = totalDistanceKm - s.distanceKm;
+    return {
+      id: s.id,
+      sequence: index + 1,
+      distanceKm,
+      offsetMinutes: Math.round(distanceKm * SCHEDULE_MINUTES_PER_KM),
+    };
+  });
 }
 
 async function getOrCreateRoute(client: PoolClient): Promise<{ routeId: number; isNew: boolean }> {
@@ -226,7 +268,7 @@ async function ensureTrip(
   routeId: number,
   departureTime: string,
   serviceDate: string,
-  stations: StationRow[],
+  stops: StopSpec[],
   coachIds: number[]
 ): Promise<{ tripId: number; created: boolean }> {
   const existing = await client.query(
@@ -243,7 +285,7 @@ async function ensureTrip(
   );
   const tripId: number = rows[0].id;
 
-  for (const s of stations) {
+  for (const s of stops) {
     // No dwell time modeled: scheduled_arrival == scheduled_departure at
     // every stop (see README).
     const scheduledTime = scheduledTimeAt(serviceDate, departureTime, s.offsetMinutes);
@@ -272,18 +314,19 @@ async function seed(client: PoolClient) {
   const coachIds = await getOrCreateCoaches(client);
   await getOrCreateFareRules(client);
 
-  const trainIdByName = new Map<string, number>();
-  for (const t of TRAIN_DEFS) {
-    trainIdByName.set(t.name, await getOrCreateTrain(client, t.name, t.number));
-  }
-
+  const trainIdByKey = new Map<string, number>();
   let createdCount = 0;
   let skippedCount = 0;
   for (const spec of TRIP_SPECS) {
-    const trainId = trainIdByName.get(spec.trainName);
-    if (!trainId) throw new Error(`Unknown train in TRIP_SPECS: ${spec.trainName}`);
+    const key = `${spec.trainName}|${spec.trainNumber}`;
+    let trainId = trainIdByKey.get(key);
+    if (trainId === undefined) {
+      trainId = await getOrCreateTrain(client, spec.trainName, spec.trainNumber);
+      trainIdByKey.set(key, trainId);
+    }
     const serviceDate = dateStringWithOffset(spec.dayOffset);
-    const { created } = await ensureTrip(client, trainId, routeId, spec.departureTime, serviceDate, stations, coachIds);
+    const stops = buildStops(stations, spec.direction);
+    const { created } = await ensureTrip(client, trainId, routeId, spec.departureTime, serviceDate, stops, coachIds);
     if (created) createdCount++;
     else skippedCount++;
   }
