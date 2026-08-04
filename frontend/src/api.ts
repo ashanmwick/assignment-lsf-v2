@@ -127,10 +127,10 @@ export const api = {
       `/api/trips/${tripId}/availability?origin=${originStationId}&destination=${destinationStationId}`
     ),
 
-  createPassenger: (name: string, email?: string) =>
+  createPassenger: (name: string, phone: string) =>
     request<Passenger>("/api/passengers", {
       method: "POST",
-      body: JSON.stringify({ name, email: email || undefined }),
+      body: JSON.stringify({ name, phone }),
     }),
 
   createBooking: (input: {

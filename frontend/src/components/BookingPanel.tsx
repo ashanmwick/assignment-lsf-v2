@@ -25,6 +25,7 @@ export function BookingPanel({
 }: Props) {
   const [remainingMs, setRemainingMs] = useState<number>(msRemaining(booking.heldUntil));
   const [busy, setBusy] = useState(false);
+  const [paying, setPaying] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -40,15 +41,21 @@ export function BookingPanel({
     return () => clearInterval(interval);
   }, [booking.heldUntil, booking.status, onExpired]);
 
-  const handleConfirm = async () => {
+  // Demo-only "payment": no real gateway involved. Simulates a brief
+  // processing delay so the pay-now step feels real before the booking
+  // actually flips from held to confirmed.
+  const handlePayNow = async () => {
     setBusy(true);
+    setPaying(true);
     setError(null);
     try {
+      await new Promise((resolve) => setTimeout(resolve, 1200));
       await onConfirm();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to confirm booking");
+      setError(err instanceof Error ? err.message : "Payment failed — please try again");
     } finally {
       setBusy(false);
+      setPaying(false);
     }
   };
 
@@ -97,27 +104,30 @@ export function BookingPanel({
         {booking.status === "confirmed" && <span className="booking-status-badge">Confirmed</span>}
       </div>
 
-      <div className="booking-actions">
-        {booking.status === "held" && (
-          <>
-            <button className="secondary" onClick={handleCancel} disabled={busy}>
-              Release seat
-            </button>
-            <button onClick={handleConfirm} disabled={busy}>
-              Continue
-            </button>
-          </>
-        )}
-        {booking.status === "confirmed" && (
-          <>
-            <button className="secondary" onClick={handleCancel} disabled={busy}>
-              Cancel booking
-            </button>
-            <button onClick={onBookAnother} disabled={busy}>
-              Book another seat
-            </button>
-          </>
-        )}
+      <div className="booking-actions-wrap">
+        <div className="booking-actions">
+          {booking.status === "held" && (
+            <>
+              <button className="secondary" onClick={handleCancel} disabled={busy}>
+                Release seat
+              </button>
+              <button onClick={handlePayNow} disabled={busy}>
+                {paying ? "Processing payment..." : `Pay Now Rs. ${booking.fare.toFixed(2)}`}
+              </button>
+            </>
+          )}
+          {booking.status === "confirmed" && (
+            <>
+              <button className="secondary" onClick={handleCancel} disabled={busy}>
+                Cancel booking
+              </button>
+              <button onClick={onBookAnother} disabled={busy}>
+                Book another seat
+              </button>
+            </>
+          )}
+        </div>
+        {booking.status === "held" && <p className="demo-note">Demo payment — no real charge is made.</p>}
       </div>
 
       {error && <p className="error-text">{error}</p>}

@@ -423,6 +423,19 @@
   color: var(--text);
 }
 
+.booking-actions-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.demo-note {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin: 0;
+}
+
 .booking-actions button:disabled {
   opacity: 0.5;
 }
@@ -456,6 +469,21 @@
 .modal-panel h3 {
   margin: 0 0 16px;
   font-size: 16px;
+}
+
+.modal-hint {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin: -8px 0 12px;
+}
+
+.demo-otp-hint {
+  font-size: 13px;
+  background: var(--bg);
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 0 0 12px;
 }
 
 .modal-panel label {
