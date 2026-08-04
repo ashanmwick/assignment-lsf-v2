@@ -12,18 +12,6 @@ the same `docker-compose.yml`.
 docker-compose up --build
 ```
 
-This single command:
-
-- Starts a local Postgres 16 container with the `btree_gist` extension
-  available (the same extension the hosted Supabase instance also uses —
-  nothing in the schema is Supabase-specific).
-- Runs the database migration, then the seed script, as one-shot jobs
-  before anything else starts. Both are idempotent, so re-running
-  `docker-compose up` at any time is safe — it won't duplicate data or
-  error on already-applied migrations.
-- Starts the backend API on `http://localhost:4000` and the built
-  frontend on `http://localhost:5173`.
-
 Once it's up, open **http://localhost:5173** and book a seat.
 
 To stop everything:
@@ -82,6 +70,13 @@ exists before writing anything.
 ## Design decisions and reasoning
  
 ### Data model: half-open intervals, not per-station flags
+
+
+
+
+
+
+
 
 
 ## Repo layout
