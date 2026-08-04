@@ -152,6 +152,56 @@ anywhere — they render and query whatever is actually in `coach`, `seat`,
 and `route_station`. Extending the route or adding coaches later is a data
 change, not a code change.
 
+### Scheduled arrival/departure (additive change)
+
+`trip.departure_time` only ever captured when the train leaves the origin —
+a passenger booking Kandy → Badulla had no way to see when the train reaches
+either station. This was added as a purely additive migration
+(`1706000100000_add_scheduled_times.cjs`) on top of the original schema:
+
+- `route_station` gains `offset_minutes` — a **template** value (minutes
+  from the route's nominal start, ~1.4 min/km), analogous to how
+  `distance_km` already seeds `trip_stop.distance_km` at trip-creation time.
+  It doesn't mean anything on its own; it exists to be copied forward.
+- `trip_stop` gains nullable `scheduled_arrival` / `scheduled_departure`
+  (`TIMESTAMPTZ`), computed once at trip-creation/seed time as
+  `trip.service_date + trip.departure_time + route_station.offset_minutes`.
+  Nullable so adding the columns is a safe, non-breaking change; the
+  migration also backfills every pre-existing row using the same formula,
+  so nothing is left null in practice.
+
+**Why this didn't touch the `EXCLUDE` constraint, the overlap check, or fare
+logic:** all three depend entirely on `sequence` and `distance_km`, neither
+of which changed. `scheduled_arrival`/`scheduled_departure` are purely
+derived, display-only data computed *from* a stop's existing `sequence` — they
+don't participate in the interval-overlap math (`int4range(origin_seq,
+destination_seq)`) or the fare formula
+(`(destination.distance_km - origin.distance_km) * rate_per_km`) at all. The
+concurrency test (`scripts/concurrency-test.mjs`) passes unmodified after
+this change, which is the concrete proof: nothing about how two overlapping
+bookings race against each other changed.
+
+**Dwell time:** modeled as zero — `scheduled_arrival == scheduled_departure`
+at every stop. A real timetable would pad a minute or two at intermediate
+stations for boarding/alighting, but that's a cosmetic refinement with no
+bearing on booking correctness, so it wasn't worth the added seed-data
+complexity for this pass.
+
+**Where absolute times do vs. don't appear, and why:** `booking` itself
+never stores scheduled times — every endpoint that returns them
+(`GET /api/trips` when leg-filtered, `.../availability`, and all booking
+responses) looks them up from `trip_stop` via the FKs that already exist
+(`trip_id, station_id, sequence`), so there's exactly one source of truth
+for a trip's schedule and no risk of a denormalized copy drifting. The
+origin/destination station **pickers**, on the other hand, show only a
+relative offset ("Kandy (+2h49m)"), not a wall-clock time — that's a
+deliberate consequence of the booking flow being date → leg → train (see
+below): no specific trip (and therefore no concrete `departure_time`) is
+known yet at the point the passenger is choosing stations, so only the
+route-level *template* offset is available. Absolute times first become
+meaningful once a train is selected, which is exactly where they're shown:
+the train picker, the page header, and the booking panel.
+
 ## Scoped out (and why)
 
 - **Unreserved-coach seat assignment.** Unreserved coaches are
@@ -179,14 +229,26 @@ change, not a code change.
   flow (schema → API → concurrency proof → frontend) over a longer feature
   list; see `Assignment_LSF_SE_Interview_2026.md`'s "Focus" note.
 
+## Booking flow
+
+The frontend deliberately orders selection as **date → origin/destination →
+train**, not train-first: a passenger thinks "I want to go from A to B",
+not "which trip ID am I booking". `GET /api/routes` and
+`GET /api/routes/:routeId/stations` are trip-independent so the station
+pickers can be populated before any train is chosen; only once a date and a
+complete leg are picked does `GET /api/trips` (leg-filtered) reveal which
+trains actually serve it, each with that leg's real scheduled
+departure/arrival.
+
 ## API
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/routes/:routeId/stations` | Ordered stations on a route |
-| GET | `/api/trips?routeId=&date=` | List trips, optionally filtered |
+| GET | `/api/routes` | List routes |
+| GET | `/api/routes/:routeId/stations` | Ordered stations on a route, each with `offsetMinutes` |
+| GET | `/api/trips?routeId=&date=&origin=&destination=` | List trips, optionally filtered; leg-filtered results include `originScheduledDeparture`/`destinationScheduledArrival` |
 | GET | `/api/trips/:tripId` | Trip detail |
-| GET | `/api/trips/:tripId/availability?origin=&destination=` | Per-seat availability for a leg |
+| GET | `/api/trips/:tripId/availability?origin=&destination=` | Per-seat availability for a leg, plus that leg's scheduled times |
 | POST | `/api/passengers` | Create a passenger (`{ name, email? }`) |
 | POST | `/api/bookings` | Create a `held` booking |
 | POST | `/api/bookings/:id/confirm` | `held` → `confirmed` |
@@ -195,7 +257,9 @@ change, not a code change.
 
 All responses are camelCase JSON. Errors are `{ "error": "message" }` with
 an appropriate status code (`400`, `404`, `409`, `500`); raw Postgres errors
-are never returned to the client.
+are never returned to the client. Booking responses include
+`originScheduledDeparture`/`destinationScheduledArrival` for the booked leg
+— looked up from `trip_stop`, never stored on `booking` itself.
 
 ## Setup (clean machine)
 
