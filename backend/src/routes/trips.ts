@@ -6,15 +6,19 @@ export const tripsRouter = Router();
 
 // GET /api/trips?routeId=&date=&origin=&destination= — list trips, optionally
 // filtered. When origin and destination (station ids) are both given, only
-// trips that actually stop at both — in that order — are returned. This is
-// deliberately a stop-level check against trip_stop, not just "same route":
-// a trip's stops are seeded from route_station but aren't permanently bound
-// to it (schema-v1.md), so a trip could in principle skip a stop.
+// trips that actually stop at both — in that order — are returned, and each
+// result is enriched with that leg's scheduled departure/arrival (looked up
+// from trip_stop, not stored anywhere new). This is deliberately a
+// stop-level check against trip_stop, not just "same route": a trip's stops
+// are seeded from route_station but aren't permanently bound to it
+// (schema-v1.md), so a trip could in principle skip a stop.
 tripsRouter.get("/trips", async (req, res, next) => {
   try {
     const { routeId, date, origin, destination } = req.query;
     const conditions: string[] = [];
     const params: unknown[] = [];
+    let legJoin = "";
+    let legSelect = "";
 
     if (routeId !== undefined) {
       params.push(Number(routeId));
@@ -34,14 +38,13 @@ tripsRouter.get("/trips", async (req, res, next) => {
       params.push(originId, destinationId);
       const originParam = params.length - 1;
       const destinationParam = params.length;
-      conditions.push(
-        `EXISTS (
-           SELECT 1 FROM trip_stop os, trip_stop ds
-           WHERE os.trip_id = trip.id AND os.station_id = $${originParam}
-             AND ds.trip_id = trip.id AND ds.station_id = $${destinationParam}
-             AND os.sequence < ds.sequence
-         )`
-      );
+      // An inner join, not just an EXISTS check, so the leg's scheduled
+      // times can be selected directly alongside each trip.
+      legJoin = `
+        JOIN trip_stop os ON os.trip_id = trip.id AND os.station_id = $${originParam}
+        JOIN trip_stop ds ON ds.trip_id = trip.id AND ds.station_id = $${destinationParam} AND ds.sequence > os.sequence
+      `;
+      legSelect = `, os.scheduled_departure AS origin_scheduled_departure, ds.scheduled_arrival AS destination_scheduled_arrival`;
     }
 
     const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
@@ -49,9 +52,11 @@ tripsRouter.get("/trips", async (req, res, next) => {
     const { rows } = await pool.query(
       `SELECT trip.id, trip.route_id, trip.train_id, trip.departure_time, trip.service_date,
               route.name AS route_name, train.train_name, train.train_number
+              ${legSelect}
        FROM trip
        JOIN route ON route.id = trip.route_id
        JOIN train ON train.id = trip.train_id
+       ${legJoin}
        ${where}
        ORDER BY trip.service_date ASC, trip.departure_time ASC`,
       params
@@ -67,6 +72,8 @@ tripsRouter.get("/trips", async (req, res, next) => {
         trainNumber: r.train_number,
         departureTime: r.departure_time,
         serviceDate: r.service_date,
+        originScheduledDeparture: r.origin_scheduled_departure ?? null,
+        destinationScheduledArrival: r.destination_scheduled_arrival ?? null,
       }))
     );
   } catch (err) {
@@ -132,7 +139,7 @@ tripsRouter.get("/trips/:tripId/availability", async (req, res, next) => {
     }
 
     const stopRows = await pool.query(
-      `SELECT station_id, sequence, distance_km
+      `SELECT station_id, sequence, distance_km, scheduled_arrival, scheduled_departure
        FROM trip_stop
        WHERE trip_id = $1 AND station_id = ANY($2::int[])`,
       [tripId, [originStationId, destinationStationId]]
@@ -204,11 +211,17 @@ tripsRouter.get("/trips/:tripId/availability", async (req, res, next) => {
 
     res.json({
       tripId,
-      origin: { stationId: originStationId, sequence: origin.sequence, distanceKm: Number(origin.distance_km) },
+      origin: {
+        stationId: originStationId,
+        sequence: origin.sequence,
+        distanceKm: Number(origin.distance_km),
+        scheduledDeparture: origin.scheduled_departure,
+      },
       destination: {
         stationId: destinationStationId,
         sequence: destination.sequence,
         distanceKm: Number(destination.distance_km),
+        scheduledArrival: destination.scheduled_arrival,
       },
       coaches,
     });

@@ -23,7 +23,7 @@ stationsRouter.get("/routes/:routeId/stations", async (req, res, next) => {
     if (!Number.isInteger(routeId)) throw BadRequest("routeId must be an integer");
 
     const { rows } = await pool.query(
-      `SELECT s.id, s.name, s.code, rs.sequence, rs.distance_km
+      `SELECT s.id, s.name, s.code, rs.sequence, rs.distance_km, rs.offset_minutes
        FROM route_station rs
        JOIN station s ON s.id = rs.station_id
        WHERE rs.route_id = $1
@@ -38,6 +38,12 @@ stationsRouter.get("/routes/:routeId/stations", async (req, res, next) => {
         code: r.code,
         sequence: r.sequence,
         distanceKm: Number(r.distance_km),
+        // Minutes from the route's nominal start — a schedule *template*,
+        // not an absolute time (no trip/departure_time is known yet at this
+        // endpoint). Absolute scheduled_arrival/scheduled_departure appear
+        // once a trip is in view: GET /api/trips (leg-filtered),
+        // .../availability, and booking responses. See README.
+        offsetMinutes: r.offset_minutes,
       }))
     );
   } catch (err) {

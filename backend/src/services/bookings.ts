@@ -1,4 +1,4 @@
-import type { PoolClient } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { pool, withTransaction } from "../db";
 import { config } from "../config";
 import { AppError, BadRequest, Conflict, NotFound, PG_EXCLUSION_VIOLATION, isPgError } from "../errors";
@@ -15,13 +15,22 @@ interface TripStopRow {
   station_id: number;
   sequence: number;
   distance_km: string;
+  scheduled_arrival: string | null;
+  scheduled_departure: string | null;
 }
+
+interface ScheduledTimes {
+  originScheduledDeparture: string | null;
+  destinationScheduledArrival: string | null;
+}
+
+const NO_SCHEDULED_TIMES: ScheduledTimes = { originScheduledDeparture: null, destinationScheduledArrival: null };
 
 /** Every other endpoint in this API returns camelCase JSON; map booking rows
  * (raw `RETURNING *` / `SELECT *` results, which are snake_case Postgres
  * column names) to the same convention so the frontend has one consistent
  * contract to work against. */
-function toBookingDto(row: Record<string, unknown>) {
+function toBookingDto(row: Record<string, unknown>, scheduledTimes: ScheduledTimes = NO_SCHEDULED_TIMES) {
   return {
     id: row.id,
     tripId: row.trip_id,
@@ -36,6 +45,11 @@ function toBookingDto(row: Record<string, unknown>) {
     status: row.status,
     heldUntil: row.held_until,
     createdAt: row.created_at,
+    // Looked up from trip_stop via the booking's existing FK
+    // (trip_id, origin_station_id, origin_seq) / (..., destination_...),
+    // never stored on booking itself — see README.
+    originScheduledDeparture: scheduledTimes.originScheduledDeparture,
+    destinationScheduledArrival: scheduledTimes.destinationScheduledArrival,
     ...(row.origin_station_name !== undefined && {
       originStationName: row.origin_station_name,
       destinationStationName: row.destination_station_name,
@@ -44,6 +58,31 @@ function toBookingDto(row: Record<string, unknown>) {
       coachNumber: row.coach_number,
       coachType: row.coach_type,
     }),
+  };
+}
+
+interface BookingLegRow {
+  trip_id: number;
+  origin_station_id: number;
+  origin_seq: number;
+  destination_station_id: number;
+  destination_seq: number;
+}
+
+/** Looks up a booking's leg's scheduled times from trip_stop. Kept as a
+ * lookup (not a column on booking) so there's one source of truth — a trip's
+ * schedule can only ever be read from trip_stop, never drift onto a stale
+ * copy on the booking row. */
+async function fetchScheduledTimes(queryable: PoolClient | Pool, leg: BookingLegRow): Promise<ScheduledTimes> {
+  const { rows } = await queryable.query(
+    `SELECT
+       (SELECT scheduled_departure FROM trip_stop WHERE trip_id = $1 AND station_id = $2 AND sequence = $3) AS origin_scheduled_departure,
+       (SELECT scheduled_arrival FROM trip_stop WHERE trip_id = $1 AND station_id = $4 AND sequence = $5) AS destination_scheduled_arrival`,
+    [leg.trip_id, leg.origin_station_id, leg.origin_seq, leg.destination_station_id, leg.destination_seq]
+  );
+  return {
+    originScheduledDeparture: rows[0]?.origin_scheduled_departure ?? null,
+    destinationScheduledArrival: rows[0]?.destination_scheduled_arrival ?? null,
   };
 }
 
@@ -61,7 +100,7 @@ function toBookingDto(row: Record<string, unknown>) {
 export async function createHeldBooking(input: CreateBookingInput) {
   return withTransaction(async (client) => {
     const stopRows = await client.query<TripStopRow>(
-      `SELECT station_id, sequence, distance_km
+      `SELECT station_id, sequence, distance_km, scheduled_arrival, scheduled_departure
        FROM trip_stop
        WHERE trip_id = $1 AND station_id = ANY($2::int[])`,
       [input.tripId, [input.originStationId, input.destinationStationId]]
@@ -142,7 +181,10 @@ export async function createHeldBooking(input: CreateBookingInput) {
           heldUntil,
         ]
       );
-      return toBookingDto(rows[0]);
+      return toBookingDto(rows[0], {
+        originScheduledDeparture: origin.scheduled_departure,
+        destinationScheduledArrival: destination.scheduled_arrival,
+      });
     } catch (err) {
       if (isPgError(err) && err.code === PG_EXCLUSION_VIOLATION) {
         throw Conflict(
@@ -164,11 +206,11 @@ export async function confirmBooking(bookingId: number) {
       [bookingId]
     );
 
-    if (rows[0]) return toBookingDto(rows[0]);
+    if (rows[0]) return toBookingDto(rows[0], await fetchScheduledTimes(client, rows[0]));
 
     const existing = await getBookingWithClient(client, bookingId);
     if (!existing) throw NotFound(`Booking ${bookingId} not found`);
-    if (existing.status === "confirmed") return toBookingDto(existing);
+    if (existing.status === "confirmed") return toBookingDto(existing, await fetchScheduledTimes(client, existing));
     if (existing.status === "held") {
       throw Conflict(`Booking ${bookingId}'s hold has expired — the seat must be re-booked`);
     }
@@ -186,7 +228,7 @@ export async function cancelBooking(bookingId: number) {
       [bookingId]
     );
 
-    if (rows[0]) return toBookingDto(rows[0]);
+    if (rows[0]) return toBookingDto(rows[0], await fetchScheduledTimes(client, rows[0]));
 
     const existing = await getBookingWithClient(client, bookingId);
     if (!existing) throw NotFound(`Booking ${bookingId} not found`);
@@ -202,15 +244,24 @@ async function getBookingWithClient(client: PoolClient, bookingId: number) {
 export async function getBookingDetail(bookingId: number) {
   const { rows } = await pool.query(
     `SELECT b.*, os.name AS origin_station_name, ds.name AS destination_station_name,
-            p.name AS passenger_name, s.seat_number, c.coach_number, c.coach_type
+            p.name AS passenger_name, s.seat_number, c.coach_number, c.coach_type,
+            ots.scheduled_departure AS origin_scheduled_departure,
+            dts.scheduled_arrival AS destination_scheduled_arrival
      FROM booking b
      JOIN station os ON os.id = b.origin_station_id
      JOIN station ds ON ds.id = b.destination_station_id
      JOIN passenger p ON p.id = b.passenger_id
      JOIN seat s ON s.id = b.seat_id
      JOIN coach c ON c.id = b.coach_id
+     JOIN trip_stop ots ON ots.trip_id = b.trip_id AND ots.station_id = b.origin_station_id AND ots.sequence = b.origin_seq
+     JOIN trip_stop dts ON dts.trip_id = b.trip_id AND dts.station_id = b.destination_station_id AND dts.sequence = b.destination_seq
      WHERE b.id = $1`,
     [bookingId]
   );
-  return rows[0] ? toBookingDto(rows[0]) : null;
+  const row = rows[0];
+  if (!row) return null;
+  return toBookingDto(row, {
+    originScheduledDeparture: row.origin_scheduled_departure,
+    destinationScheduledArrival: row.destination_scheduled_arrival,
+  });
 }
