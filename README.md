@@ -107,7 +107,7 @@ they share a stop, regardless of the distance or time between stops.
 Two people might try to book the same seat, on the same trip, for overlapping
 parts of the journey, at the same time. Only one should win.
 
-# The fix: let Postgres enforce it, not our code
+### The fix: let Postgres enforce it, not our code
 We add a special database rule (an `EXCLUDE` constraint) that says:
  
 > "For the same seat and the same trip, no two active bookings are allowed
@@ -171,7 +171,87 @@ away eventually so others can use the seat. We handle this two ways:
   job would run as a proper scheduled task like `pg_cron`, so it survives
   restarts and doesn't duplicate itself if we run multiple servers.)
 
+### 3. Configurability
+ 
+The assignment asks for coach counts, seats per coach, and stations to be
+configurable rather than hardcoded. Nothing in the backend or frontend
+assumes a fixed number of coaches, seats, or stations — those are rows in
+`coach`, `seat`, `route_station`, read at query time. `backend/scripts/seed.ts`
+centralizes the current line's configuration (20 stations, 3 reserved + 5
+unreserved coaches, 44 seats per reserved coach) as data at the top of the
+file; extending the route or adding coaches means editing that data (or
+writing a different seed), not touching API or frontend code.
 
+### 4. Why a modular monolith over microservices
+ 
+Segment-overlap checking needs the same transaction to see the seat's
+current bookings and commit the new one atomically — that's exactly what
+the `EXCLUDE` constraint depends on. Splitting booking, availability, and
+fare calculation into separately-deployed services would force a choice
+between calling back into one shared database anyway (in which case the
+service boundary adds latency and complexity without adding independence)
+or maintaining separate data stores kept eventually consistent (in which
+case double-booking becomes possible during the inconsistency window,
+which this system cannot tolerate). A modular monolith — one deployable,
+internally organized into `routes/` and `services/` by responsibility —
+gets the code organization benefit of separated concerns without giving up
+the transactional guarantee the whole system depends on.
+
+
+
+## Extra credit implemented
+ 
+- **Seat map visualization** (`frontend/src/components/SeatMap.tsx`) — a
+  real grid of seats per coach, laid out by row/column, colored by
+  availability status for the currently-selected leg.
+- **Real-time-feeling conflict handling** — the frontend disables the seat
+  map synchronously on the first click (before the request resolves) to
+  close the window where a burst of clicks could fire multiple concurrent
+  holds that the UI can't track; on a `409` it shows a clear "someone else
+  just booked that seat" message and immediately refreshes availability
+  instead of leaving a stale seat map on screen. A live countdown on the
+  hold (`BookingPanel.tsx`) shows the passenger exactly how long they have
+  before the hold expires, and releases the seat automatically if it does.
+- **Scheduled arrival/departure times** end-to-end — station pickers, the
+  seat map header, and the booking confirmation all show real times for
+  the selected leg (see "Scheduled times" above), not just station names.
+
+## Challenges
+ 
+## 1. Making sure a booking's start/end points are always real stops on the trip
+ 
+- each booking of seat stores an origin and a destination, and each is a
+  **station + sequence number** pair.
+- Problem: nothing stopped the station and sequence number from pointing
+  to different stops — i.e. a "phantom" origin/destination that doesn't
+  match a real stop on that trip.
+- But the fix couldn't be so strict it rejected valid bookings.
+- **Solution:** require the origin's (station, sequence) pair to match one
+  real row in the trip's stop list — same for the destination.
+- Postgres checks this automatically the moment a booking is inserted.
+
+## 2. Who clears an expired hold, and when
+ 
+- Two approaches considered:
+  - Clean up immediately, right when someone else tries to book that same
+    seat (narrow, synchronous).
+  - Clean up on a schedule in the background (broad, periodic).
+- **Decision: do both** — they solve different problems.
+  - **Immediate check** → if you're booking a seat right now, any stale
+    expired hold on that *exact* seat can't block you.
+  - **Background sweep** → keeps everyone else's view of "what's
+    available" accurate in general, even for seats nobody's actively
+    booking at that moment.
+
+ 
+
+
+## AI tools used
+ 
+- **Claude** — architecture and schema design discussion and drafting documentations.
+- **Claude Code** — implementation: migrations, API routes, the booking
+  service, the seed script, the frontend, and the concurrency test.
+- **ChatGPT** — used alongside the above during development.
 
 ## Repo layout
 
