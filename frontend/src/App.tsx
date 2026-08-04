@@ -233,8 +233,8 @@ function App() {
   return (
     <div className="app">
       <header className="app-header">
-        <h1>Colombo Fort &ndash; Badulla</h1>
-        <p className="trip-meta">
+        <h1>Welcome to Sri Lanka Railways</h1>
+        {/* <p className="trip-meta">
           {selectedTrip && originStation && destinationStation ? (
             <>
               {selectedTrip.trainName} {selectedTrip.trainNumber ? `(${selectedTrip.trainNumber})` : ""} &middot;{" "}
@@ -245,7 +245,7 @@ function App() {
           ) : (
             "Search for a train to see the schedule."
           )}
-        </p>
+        </p> */}
       </header>
 
       {loadError && <div className="banner banner-error">{loadError}</div>}
