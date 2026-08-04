@@ -24,6 +24,11 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return body as T;
 }
 
+export interface Route {
+  id: number;
+  name: string;
+}
+
 export interface Station {
   id: number;
   name: string;
@@ -94,12 +99,16 @@ export interface Booking {
 }
 
 export const api = {
+  getRoutes: () => request<Route[]>("/api/routes"),
+
   getStations: (routeId: number) => request<Station[]>(`/api/routes/${routeId}/stations`),
 
-  getTrips: (filters?: { routeId?: number; date?: string }) => {
+  getTrips: (filters?: { routeId?: number; date?: string; originStationId?: number; destinationStationId?: number }) => {
     const params = new URLSearchParams();
     if (filters?.routeId !== undefined) params.set("routeId", String(filters.routeId));
     if (filters?.date) params.set("date", filters.date);
+    if (filters?.originStationId !== undefined) params.set("origin", String(filters.originStationId));
+    if (filters?.destinationStationId !== undefined) params.set("destination", String(filters.destinationStationId));
     const query = params.toString();
     return request<Trip[]>(`/api/trips${query ? `?${query}` : ""}`);
   },

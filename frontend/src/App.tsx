@@ -3,8 +3,8 @@ import "./App.css";
 import { ApiError, api } from "./api";
 import type { Availability, AvailabilitySeat, Booking, Passenger, Station, Trip } from "./api";
 import { PassengerForm } from "./components/PassengerForm";
-import { TripPicker } from "./components/TripPicker";
 import { StationPicker } from "./components/StationPicker";
+import { TripPicker } from "./components/TripPicker";
 import { SeatMap } from "./components/SeatMap";
 import { BookingPanel } from "./components/BookingPanel";
 
@@ -18,18 +18,19 @@ function todayDateString(): string {
 }
 
 function App() {
-  const [selectedDate, setSelectedDate] = useState<string>(todayDateString());
-  const [trips, setTrips] = useState<Trip[]>([]);
-  const [tripsLoading, setTripsLoading] = useState(false);
-  const [selectedTripId, setSelectedTripId] = useState<number | null>(null);
-
+  const [routeId, setRouteId] = useState<number | null>(null);
   const [stations, setStations] = useState<Station[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const [passenger, setPassenger] = useState<Passenger | null>(null);
 
+  const [selectedDate, setSelectedDate] = useState<string>(todayDateString());
   const [originId, setOriginId] = useState<number | null>(null);
   const [destinationId, setDestinationId] = useState<number | null>(null);
+
+  const [matchingTrips, setMatchingTrips] = useState<Trip[]>([]);
+  const [matchingTripsLoading, setMatchingTripsLoading] = useState(false);
+  const [selectedTripId, setSelectedTripId] = useState<number | null>(null);
 
   const [availability, setAvailability] = useState<Availability | null>(null);
   const [availabilityLoading, setAvailabilityLoading] = useState(false);
@@ -39,72 +40,75 @@ function App() {
   const [conflictMessage, setConflictMessage] = useState<string | null>(null);
   const [bookingError, setBookingError] = useState<string | null>(null);
 
-  // Reload the trip list whenever the date filter changes (empty = all
-  // upcoming trips). Keeps the currently-selected trip if it's still in the
-  // new list, otherwise falls back to the first trip.
+  // Discover the route and its stations once at startup — origin/destination
+  // selection needs the station list before any trip has been chosen.
   useEffect(() => {
     (async () => {
-      setTripsLoading(true);
       try {
-        const list = await api.getTrips(selectedDate ? { date: selectedDate } : undefined);
-        setTrips(list);
-        setSelectedTripId((current) => {
-          if (current !== null && list.some((t) => t.id === current)) return current;
-          return list[0]?.id ?? null;
-        });
-        if (list.length === 0) {
-          setLoadError(
-            selectedDate
-              ? `No trips found on ${selectedDate}. Try a different date or run \`npm run seed\` in backend/.`
-              : "No trips found. Run `npm run seed` in backend/ first."
-          );
-        } else {
-          setLoadError(null);
+        const routes = await api.getRoutes();
+        if (routes.length === 0) {
+          setLoadError("No routes found. Run `npm run seed` in backend/ first.");
+          return;
         }
+        const route = routes[0];
+        setRouteId(route.id);
+        const stationList = await api.getStations(route.id);
+        setStations(stationList);
+        setLoadError(null);
       } catch (err) {
-        setLoadError(err instanceof Error ? err.message : "Failed to load trips");
-      } finally {
-        setTripsLoading(false);
+        setLoadError(err instanceof Error ? err.message : "Failed to load route data");
       }
     })();
-  }, [selectedDate]);
+  }, []);
 
-  const selectedTrip = trips.find((t) => t.id === selectedTripId) ?? null;
-
-  // When the selected trip changes, load its route's stations and reset
-  // every downstream choice — origin/destination sequences and seat
-  // availability are specific to one trip.
+  // Once the passenger has picked a date + a complete leg, look up which
+  // trains actually run that leg on that date — origin/destination drive
+  // trip discovery, not the other way around.
   useEffect(() => {
-    setOriginId(null);
-    setDestinationId(null);
-    setAvailability(null);
-    setActiveBooking(null);
-    if (!selectedTrip) {
-      setStations([]);
+    if (routeId === null || originId === null || destinationId === null) {
+      setMatchingTrips([]);
+      setSelectedTripId(null);
       return;
     }
     (async () => {
+      setMatchingTripsLoading(true);
       try {
-        const stationList = await api.getStations(selectedTrip.routeId);
-        setStations(stationList);
+        const trips = await api.getTrips({
+          routeId,
+          date: selectedDate || undefined,
+          originStationId: originId,
+          destinationStationId: destinationId,
+        });
+        setMatchingTrips(trips);
+        setSelectedTripId(trips[0]?.id ?? null);
+        setLoadError(null);
       } catch (err) {
-        setLoadError(err instanceof Error ? err.message : "Failed to load stations");
+        setLoadError(err instanceof Error ? err.message : "Failed to load trains for this leg");
+      } finally {
+        setMatchingTripsLoading(false);
       }
     })();
-  }, [selectedTrip?.id, selectedTrip?.routeId]);
+  }, [routeId, selectedDate, originId, destinationId]);
+
+  // Changing the leg invalidates anything already held on the old leg/trip.
+  useEffect(() => {
+    setActiveBooking(null);
+    setAvailability(null);
+  }, [originId, destinationId]);
 
   const refreshAvailability = useCallback(async () => {
-    if (!selectedTrip || originId === null || destinationId === null) return;
+    if (selectedTripId === null || originId === null || destinationId === null) return;
     setAvailabilityLoading(true);
     try {
-      const result = await api.getAvailability(selectedTrip.id, originId, destinationId);
+      const result = await api.getAvailability(selectedTripId, originId, destinationId);
       setAvailability(result);
+      setLoadError(null);
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : "Failed to load seat availability");
     } finally {
       setAvailabilityLoading(false);
     }
-  }, [selectedTrip, originId, destinationId]);
+  }, [selectedTripId, originId, destinationId]);
 
   useEffect(() => {
     setAvailability(null);
@@ -121,13 +125,13 @@ function App() {
     // UI. Setting this synchronously, before the `await`, closes that
     // window; the seat map's `disabled` prop reflects it immediately.
     if (bookingInFlight) return;
-    if (!selectedTrip || !passenger || originId === null || destinationId === null) return;
+    if (selectedTripId === null || !passenger || originId === null || destinationId === null) return;
     setBookingInFlight(true);
     setConflictMessage(null);
     setBookingError(null);
     try {
       const booking = await api.createBooking({
-        tripId: selectedTrip.id,
+        tripId: selectedTripId,
         seatId: seat.seatId,
         passengerId: passenger.id,
         originStationId: originId,
@@ -171,9 +175,12 @@ function App() {
 
   const originStation = stations.find((s) => s.id === originId) ?? null;
   const destinationStation = stations.find((s) => s.id === destinationId) ?? null;
+  const selectedTrip = matchingTrips.find((t) => t.id === selectedTripId) ?? null;
 
   const reservedCoaches = availability?.coaches.filter((c) => c.coachType === "reserved") ?? [];
   const unreservedCoaches = availability?.coaches.filter((c) => c.coachType === "unreserved") ?? [];
+
+  const legChosen = originId !== null && destinationId !== null;
 
   return (
     <div className="app">
@@ -191,20 +198,18 @@ function App() {
 
       <div className="app-body">
         <aside className="sidebar">
-          <TripPicker
-            trips={trips}
-            loading={tripsLoading}
-            selectedDate={selectedDate}
-            onChangeDate={setSelectedDate}
-            selectedTripId={selectedTripId}
-            onChangeTrip={setSelectedTripId}
-          />
-
           <PassengerForm
             passenger={passenger}
             onPassengerCreated={setPassenger}
             onReset={() => setPassenger(null)}
           />
+
+          <div className="panel">
+            <label>
+              Date
+              <input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} />
+            </label>
+          </div>
 
           <StationPicker
             stations={stations}
@@ -214,10 +219,18 @@ function App() {
             onChangeDestination={setDestinationId}
           />
 
-          {!passenger && <p className="hint">Enter your name to start booking a seat.</p>}
-          {passenger && (!originId || !destinationId) && (
-            <p className="hint">Choose an origin and destination to see seat availability.</p>
+          {!legChosen && <p className="hint">Choose an origin and destination to see available trains.</p>}
+
+          {legChosen && (
+            <TripPicker
+              trips={matchingTrips}
+              loading={matchingTripsLoading}
+              selectedTripId={selectedTripId}
+              onChangeTrip={setSelectedTripId}
+            />
           )}
+
+          {!passenger && <p className="hint">Enter your name to start booking a seat.</p>}
 
           {activeBooking && originStation && destinationStation && (
             <BookingPanel
@@ -245,6 +258,12 @@ function App() {
             </div>
           )}
 
+          {legChosen && !matchingTripsLoading && matchingTrips.length === 0 && (
+            <div className="panel">
+              No trains run this leg on {selectedDate || "any seeded date"}. Try a different date.
+            </div>
+          )}
+
           {availabilityLoading && <p className="hint">Loading seat map...</p>}
 
           {!availabilityLoading && availability && (
@@ -256,8 +275,12 @@ function App() {
             />
           )}
 
-          {!availabilityLoading && !availability && (
-            <div className="panel">Select an origin and destination to see the seat map.</div>
+          {!availabilityLoading && !availability && legChosen && matchingTrips.length > 0 && (
+            <div className="panel">Select a train to see the seat map.</div>
+          )}
+
+          {!availabilityLoading && !availability && !legChosen && (
+            <div className="panel">Select an origin and destination to get started.</div>
           )}
         </main>
       </div>
