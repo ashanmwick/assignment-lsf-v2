@@ -34,6 +34,13 @@ const STATIONS: { name: string; code: string; distanceKm: number }[] = [
 
 const ROUTE_NAME = "Colombo Fort–Badulla";
 
+// Minutes of scheduled running time per km — plausible for this line's
+// hill-country grades, not precise. Matches the rate used by the
+// 1706000100000_add_scheduled_times migration's backfill of pre-existing
+// rows, so a full re-seed and that backfill produce materially the same
+// schedule.
+const SCHEDULE_MINUTES_PER_KM = 1.4;
+
 const RESERVED_COACH_COUNT = 3;
 const UNRESERVED_COACH_COUNT = 5;
 const SEATS_PER_RESERVED_COACH = 44; // 11 rows x 4 seats (A/B aisle C/D)
@@ -74,11 +81,24 @@ function dateStringWithOffset(days: number): string {
   return d.toISOString().slice(0, 10);
 }
 
+// Sri Lanka is UTC+5:30 year-round (no DST), so this is unambiguous without
+// depending on the machine's local timezone. serviceDate is 'YYYY-MM-DD',
+// departureTime is 'HH:MM:SS', both representing Colombo wall-clock time.
+function scheduledTimeAt(serviceDate: string, departureTime: string, offsetMinutes: number): Date {
+  const [year, month, day] = serviceDate.split("-").map(Number);
+  const [hour, minute, second] = departureTime.split(":").map(Number);
+  const SRI_LANKA_UTC_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+  const utcMillis =
+    Date.UTC(year, month - 1, day, hour, minute, second ?? 0) - SRI_LANKA_UTC_OFFSET_MS + offsetMinutes * 60 * 1000;
+  return new Date(utcMillis);
+}
+
 interface StationRow {
   id: number;
   name: string;
   sequence: number;
   distanceKm: number;
+  offsetMinutes: number;
 }
 
 async function getOrCreateRoute(client: PoolClient): Promise<{ routeId: number; isNew: boolean }> {
@@ -93,29 +113,36 @@ async function getOrCreateRoute(client: PoolClient): Promise<{ routeId: number; 
 async function getOrCreateStations(client: PoolClient, routeId: number, routeIsNew: boolean): Promise<StationRow[]> {
   if (!routeIsNew) {
     const { rows } = await client.query(
-      `SELECT s.id, s.name, rs.sequence, rs.distance_km
+      `SELECT s.id, s.name, rs.sequence, rs.distance_km, rs.offset_minutes
        FROM route_station rs
        JOIN station s ON s.id = rs.station_id
        WHERE rs.route_id = $1
        ORDER BY rs.sequence ASC`,
       [routeId]
     );
-    return rows.map((r) => ({ id: r.id, name: r.name, sequence: r.sequence, distanceKm: Number(r.distance_km) }));
+    return rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      sequence: r.sequence,
+      distanceKm: Number(r.distance_km),
+      offsetMinutes: r.offset_minutes,
+    }));
   }
 
   const result: StationRow[] = [];
   for (let i = 0; i < STATIONS.length; i++) {
     const s = STATIONS[i];
+    const offsetMinutes = Math.round(s.distanceKm * SCHEDULE_MINUTES_PER_KM);
     const { rows } = await client.query(
       "INSERT INTO station (name, code) VALUES ($1, $2) RETURNING id",
       [s.name, s.code]
     );
     const stationId: number = rows[0].id;
     await client.query(
-      `INSERT INTO route_station (route_id, station_id, sequence, distance_km) VALUES ($1, $2, $3, $4)`,
-      [routeId, stationId, i + 1, s.distanceKm]
+      `INSERT INTO route_station (route_id, station_id, sequence, distance_km, offset_minutes) VALUES ($1, $2, $3, $4, $5)`,
+      [routeId, stationId, i + 1, s.distanceKm, offsetMinutes]
     );
-    result.push({ id: stationId, name: s.name, sequence: i + 1, distanceKm: s.distanceKm });
+    result.push({ id: stationId, name: s.name, sequence: i + 1, distanceKm: s.distanceKm, offsetMinutes });
   }
   return result;
 }
@@ -217,9 +244,13 @@ async function ensureTrip(
   const tripId: number = rows[0].id;
 
   for (const s of stations) {
+    // No dwell time modeled: scheduled_arrival == scheduled_departure at
+    // every stop (see README).
+    const scheduledTime = scheduledTimeAt(serviceDate, departureTime, s.offsetMinutes);
     await client.query(
-      `INSERT INTO trip_stop (trip_id, station_id, sequence, distance_km) VALUES ($1, $2, $3, $4)`,
-      [tripId, s.id, s.sequence, s.distanceKm]
+      `INSERT INTO trip_stop (trip_id, station_id, sequence, distance_km, scheduled_arrival, scheduled_departure)
+       VALUES ($1, $2, $3, $4, $5, $5)`,
+      [tripId, s.id, s.sequence, s.distanceKm, scheduledTime]
     );
   }
 
