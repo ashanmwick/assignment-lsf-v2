@@ -3,10 +3,11 @@ import { Pool, type PoolClient } from "pg";
 
 /**
  * Seed configuration. These numbers are data, not application logic — the
- * backend and frontend never assume "3 reserved coaches" or "20 stations"
- * anywhere; they read whatever ended up in the database. Change these
- * constants (or write a different seed entirely) to model a longer route,
- * more coaches, or a different seat layout without touching any API code.
+ * backend and frontend never assume "3 reserved coaches", "20 stations", or
+ * "one trip" anywhere; they read whatever ended up in the database. Change
+ * these constants (or write a different seed entirely) to model a longer
+ * route, more coaches, or a different schedule without touching any API or
+ * frontend code.
  */
 const STATIONS: { name: string; code: string; distanceKm: number }[] = [
   { name: "Colombo Fort", code: "CMB", distanceKm: 0 },
@@ -32,9 +33,6 @@ const STATIONS: { name: string; code: string; distanceKm: number }[] = [
 ];
 
 const ROUTE_NAME = "Colombo Fort–Badulla";
-const TRAIN_NAME = "Podi Menike";
-const TRAIN_NUMBER = "1005";
-const DEPARTURE_TIME = "05:55:00";
 
 const RESERVED_COACH_COUNT = 3;
 const UNRESERVED_COACH_COUNT = 5;
@@ -46,6 +44,21 @@ const FARE_RULES = [
   { coachType: "unreserved", ratePerKm: 2.2 },
 ];
 
+// Two real named trains that run this line, each scheduled across the next
+// few days — enough for the frontend's date filter / trip picker to have
+// something to pick between, without pretending to be a full timetable.
+const TRAIN_DEFS = [
+  { name: "Podi Menike", number: "1005" },
+  { name: "Udarata Menike", number: "1015" },
+];
+
+const TRIP_SPECS: { trainName: string; departureTime: string; dayOffset: number }[] = [0, 1, 2].flatMap(
+  (dayOffset) => [
+    { trainName: "Podi Menike", departureTime: "05:55:00", dayOffset },
+    { trainName: "Udarata Menike", departureTime: "08:35:00", dayOffset },
+  ]
+);
+
 function seatLayout(index: number): { seatNumber: string; row: number; column: number; seatType: string } {
   const seatsPerRow = 4;
   const row = Math.floor(index / seatsPerRow) + 1;
@@ -55,123 +68,201 @@ function seatLayout(index: number): { seatNumber: string; row: number; column: n
   return { seatNumber: `${row}${letters[columnIndex]}`, row, column: columnIndex + 1, seatType };
 }
 
-function todayAsDateString(): string {
-  const now = new Date();
-  return now.toISOString().slice(0, 10);
+function dateStringWithOffset(days: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  return d.toISOString().slice(0, 10);
 }
 
-async function seed(client: PoolClient) {
-  const existingRoute = await client.query("SELECT id FROM route WHERE name = $1", [ROUTE_NAME]);
-  if (existingRoute.rowCount && existingRoute.rowCount > 0) {
-    console.log(`Route "${ROUTE_NAME}" already exists (id ${existingRoute.rows[0].id}) — skipping seed.`);
-    return;
+interface StationRow {
+  id: number;
+  name: string;
+  sequence: number;
+  distanceKm: number;
+}
+
+async function getOrCreateRoute(client: PoolClient): Promise<{ routeId: number; isNew: boolean }> {
+  const existing = await client.query("SELECT id FROM route WHERE name = $1", [ROUTE_NAME]);
+  if (existing.rowCount && existing.rowCount > 0) {
+    return { routeId: existing.rows[0].id, isNew: false };
+  }
+  const { rows } = await client.query("INSERT INTO route (name) VALUES ($1) RETURNING id", [ROUTE_NAME]);
+  return { routeId: rows[0].id, isNew: true };
+}
+
+async function getOrCreateStations(client: PoolClient, routeId: number, routeIsNew: boolean): Promise<StationRow[]> {
+  if (!routeIsNew) {
+    const { rows } = await client.query(
+      `SELECT s.id, s.name, rs.sequence, rs.distance_km
+       FROM route_station rs
+       JOIN station s ON s.id = rs.station_id
+       WHERE rs.route_id = $1
+       ORDER BY rs.sequence ASC`,
+      [routeId]
+    );
+    return rows.map((r) => ({ id: r.id, name: r.name, sequence: r.sequence, distanceKm: Number(r.distance_km) }));
   }
 
-  await client.query("BEGIN");
-
-  // Stations
-  const stationIds: number[] = [];
-  for (const s of STATIONS) {
+  const result: StationRow[] = [];
+  for (let i = 0; i < STATIONS.length; i++) {
+    const s = STATIONS[i];
     const { rows } = await client.query(
       "INSERT INTO station (name, code) VALUES ($1, $2) RETURNING id",
       [s.name, s.code]
     );
-    stationIds.push(rows[0].id);
-  }
-
-  // Route + RouteStation
-  const { rows: routeRows } = await client.query(
-    "INSERT INTO route (name) VALUES ($1) RETURNING id",
-    [ROUTE_NAME]
-  );
-  const routeId: number = routeRows[0].id;
-
-  for (let i = 0; i < STATIONS.length; i++) {
+    const stationId: number = rows[0].id;
     await client.query(
-      `INSERT INTO route_station (route_id, station_id, sequence, distance_km)
-       VALUES ($1, $2, $3, $4)`,
-      [routeId, stationIds[i], i + 1, STATIONS[i].distanceKm]
+      `INSERT INTO route_station (route_id, station_id, sequence, distance_km) VALUES ($1, $2, $3, $4)`,
+      [routeId, stationId, i + 1, s.distanceKm]
     );
+    result.push({ id: stationId, name: s.name, sequence: i + 1, distanceKm: s.distanceKm });
   }
+  return result;
+}
 
-  // Train
-  const { rows: trainRows } = await client.query(
+async function getOrCreateTrain(client: PoolClient, name: string, number: string): Promise<number> {
+  const existing = await client.query("SELECT id FROM train WHERE train_name = $1 AND train_number = $2", [
+    name,
+    number,
+  ]);
+  if (existing.rowCount && existing.rowCount > 0) return existing.rows[0].id;
+
+  const { rows } = await client.query(
     "INSERT INTO train (train_name, train_number) VALUES ($1, $2) RETURNING id",
-    [TRAIN_NAME, TRAIN_NUMBER]
+    [name, number]
   );
-  const trainId: number = trainRows[0].id;
+  return rows[0].id;
+}
 
-  // Trip
-  const { rows: tripRows } = await client.query(
-    `INSERT INTO trip (train_id, route_id, departure_time, service_date)
-     VALUES ($1, $2, $3, $4) RETURNING id`,
-    [trainId, routeId, DEPARTURE_TIME, todayAsDateString()]
-  );
-  const tripId: number = tripRows[0].id;
+async function getOrCreateCoaches(client: PoolClient): Promise<number[]> {
+  const coachIds: number[] = [];
 
-  // TripStop, seeded from RouteStation
-  for (let i = 0; i < STATIONS.length; i++) {
-    await client.query(
-      `INSERT INTO trip_stop (trip_id, station_id, sequence, distance_km)
-       VALUES ($1, $2, $3, $4)`,
-      [tripId, stationIds[i], i + 1, STATIONS[i].distanceKm]
-    );
-  }
-
-  // Coaches + TripCoach
-  let position = 1;
   for (let i = 1; i <= RESERVED_COACH_COUNT; i++) {
-    const { rows: coachRows } = await client.query(
-      `INSERT INTO coach (coach_number, coach_type, total_seats)
-       VALUES ($1, 'reserved', $2) RETURNING id`,
-      [`RC-${i}`, SEATS_PER_RESERVED_COACH]
+    const coachNumber = `RC-${i}`;
+    const existing = await client.query("SELECT id FROM coach WHERE coach_number = $1", [coachNumber]);
+    if (existing.rowCount && existing.rowCount > 0) {
+      coachIds.push(existing.rows[0].id);
+      continue;
+    }
+
+    const { rows } = await client.query(
+      `INSERT INTO coach (coach_number, coach_type, total_seats) VALUES ($1, 'reserved', $2) RETURNING id`,
+      [coachNumber, SEATS_PER_RESERVED_COACH]
     );
-    const coachId: number = coachRows[0].id;
+    const coachId: number = rows[0].id;
 
     for (let seatIndex = 0; seatIndex < SEATS_PER_RESERVED_COACH; seatIndex++) {
       const layout = seatLayout(seatIndex);
       await client.query(
-        `INSERT INTO seat (coach_id, seat_number, row, "column", seat_type)
-         VALUES ($1, $2, $3, $4, $5)`,
+        `INSERT INTO seat (coach_id, seat_number, row, "column", seat_type) VALUES ($1, $2, $3, $4, $5)`,
         [coachId, layout.seatNumber, layout.row, layout.column, layout.seatType]
       );
     }
-
-    await client.query(
-      `INSERT INTO trip_coach (trip_id, coach_id, position_in_train) VALUES ($1, $2, $3)`,
-      [tripId, coachId, position++]
-    );
+    coachIds.push(coachId);
   }
 
   for (let i = 1; i <= UNRESERVED_COACH_COUNT; i++) {
-    const { rows: coachRows } = await client.query(
-      `INSERT INTO coach (coach_number, coach_type, total_seats)
-       VALUES ($1, 'unreserved', $2) RETURNING id`,
-      [`UC-${i}`, UNRESERVED_COACH_SEAT_CAPACITY]
-    );
-    const coachId: number = coachRows[0].id;
+    const coachNumber = `UC-${i}`;
+    const existing = await client.query("SELECT id FROM coach WHERE coach_number = $1", [coachNumber]);
+    if (existing.rowCount && existing.rowCount > 0) {
+      coachIds.push(existing.rows[0].id);
+      continue;
+    }
 
     // Unreserved coaches are first-come-first-served with no seat
     // assignment (see README) — intentionally no `seat` rows are created
-    // for them, only the trip_coach attachment.
+    // for them.
+    const { rows } = await client.query(
+      `INSERT INTO coach (coach_number, coach_type, total_seats) VALUES ($1, 'unreserved', $2) RETURNING id`,
+      [coachNumber, UNRESERVED_COACH_SEAT_CAPACITY]
+    );
+    coachIds.push(rows[0].id);
+  }
+
+  return coachIds;
+}
+
+async function getOrCreateFareRules(client: PoolClient): Promise<void> {
+  for (const rule of FARE_RULES) {
+    const existing = await client.query("SELECT id FROM fare_rule WHERE coach_type = $1", [rule.coachType]);
+    if (existing.rowCount && existing.rowCount > 0) continue;
+    await client.query(`INSERT INTO fare_rule (coach_type, rate_per_km) VALUES ($1, $2)`, [
+      rule.coachType,
+      rule.ratePerKm,
+    ]);
+  }
+}
+
+async function ensureTrip(
+  client: PoolClient,
+  trainId: number,
+  routeId: number,
+  departureTime: string,
+  serviceDate: string,
+  stations: StationRow[],
+  coachIds: number[]
+): Promise<{ tripId: number; created: boolean }> {
+  const existing = await client.query(
+    `SELECT id FROM trip WHERE train_id = $1 AND route_id = $2 AND departure_time = $3 AND service_date = $4`,
+    [trainId, routeId, departureTime, serviceDate]
+  );
+  if (existing.rowCount && existing.rowCount > 0) {
+    return { tripId: existing.rows[0].id, created: false };
+  }
+
+  const { rows } = await client.query(
+    `INSERT INTO trip (train_id, route_id, departure_time, service_date) VALUES ($1, $2, $3, $4) RETURNING id`,
+    [trainId, routeId, departureTime, serviceDate]
+  );
+  const tripId: number = rows[0].id;
+
+  for (const s of stations) {
     await client.query(
-      `INSERT INTO trip_coach (trip_id, coach_id, position_in_train) VALUES ($1, $2, $3)`,
-      [tripId, coachId, position++]
+      `INSERT INTO trip_stop (trip_id, station_id, sequence, distance_km) VALUES ($1, $2, $3, $4)`,
+      [tripId, s.id, s.sequence, s.distanceKm]
     );
   }
 
-  // FareRule
-  for (const rule of FARE_RULES) {
+  for (let i = 0; i < coachIds.length; i++) {
     await client.query(
-      `INSERT INTO fare_rule (coach_type, rate_per_km) VALUES ($1, $2)`,
-      [rule.coachType, rule.ratePerKm]
+      `INSERT INTO trip_coach (trip_id, coach_id, position_in_train) VALUES ($1, $2, $3)`,
+      [tripId, coachIds[i], i + 1]
     );
+  }
+
+  return { tripId, created: true };
+}
+
+async function seed(client: PoolClient) {
+  await client.query("BEGIN");
+
+  const { routeId, isNew: routeIsNew } = await getOrCreateRoute(client);
+  const stations = await getOrCreateStations(client, routeId, routeIsNew);
+  const coachIds = await getOrCreateCoaches(client);
+  await getOrCreateFareRules(client);
+
+  const trainIdByName = new Map<string, number>();
+  for (const t of TRAIN_DEFS) {
+    trainIdByName.set(t.name, await getOrCreateTrain(client, t.name, t.number));
+  }
+
+  let createdCount = 0;
+  let skippedCount = 0;
+  for (const spec of TRIP_SPECS) {
+    const trainId = trainIdByName.get(spec.trainName);
+    if (!trainId) throw new Error(`Unknown train in TRIP_SPECS: ${spec.trainName}`);
+    const serviceDate = dateStringWithOffset(spec.dayOffset);
+    const { created } = await ensureTrip(client, trainId, routeId, spec.departureTime, serviceDate, stations, coachIds);
+    if (created) createdCount++;
+    else skippedCount++;
   }
 
   await client.query("COMMIT");
 
-  console.log(`Seeded route "${ROUTE_NAME}" (id ${routeId}), trip id ${tripId}, ${STATIONS.length} stations, ` +
-    `${RESERVED_COACH_COUNT} reserved + ${UNRESERVED_COACH_COUNT} unreserved coaches.`);
+  console.log(
+    `Route "${ROUTE_NAME}" (id ${routeId}), ${stations.length} stations, ${coachIds.length} coaches. ` +
+      `Trips: ${createdCount} created, ${skippedCount} already existed.`
+  );
 }
 
 async function main() {

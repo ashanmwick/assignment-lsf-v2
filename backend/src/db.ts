@@ -1,5 +1,12 @@
-import { Pool, type PoolClient } from "pg";
+import { Pool, type PoolClient, types } from "pg";
 import "dotenv/config";
+
+// By default node-postgres parses DATE columns into a JS Date at local
+// midnight, which then serializes to JSON (UTC) as the *previous* day for
+// any timezone ahead of UTC — e.g. service_date '2026-08-04' round-trips as
+// "2026-08-03T18:30:00.000Z" on a UTC+5:30 host. DATE has no timezone
+// concept, so return it as the raw 'YYYY-MM-DD' string instead (OID 1082).
+types.setTypeParser(1082, (val: string) => val);
 
 const connectionString = process.env.DATABASE_URL;
 
