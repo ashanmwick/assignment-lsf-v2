@@ -1,0 +1,77 @@
+# One-shot local setup: `docker compose up --build`.
+#
+# Spins up a local Postgres (with btree_gist, same as the hosted Supabase
+# instance the app also supports), runs the migration then the seed as
+# one-shot jobs, then starts the API and the built frontend. Both are
+# idempotent (see backend/migrations and backend/scripts/seed.ts), so
+# re-running `docker compose up` is safe.
+#
+# To point at a real Supabase project instead of the local db, set
+# DATABASE_URL in a .env file at this repo root before running -- the local
+# `db` service will still start but simply go unused, which is harmless.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    ports:
+      # Host 5433 (not 5432) to avoid clashing with any Postgres already
+      # running on the host. Only needed for connecting a local psql client
+      # to poke around -- app services talk to `db:5432` on the internal
+      # Docker network regardless of this mapping.
+      - "5433:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  migrate:
+    build: ./backend
+    command: ["npm", "run", "migrate"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@db:5432/postgres}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  seed:
+    build: ./backend
+    command: ["npm", "run", "seed"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@db:5432/postgres}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  backend:
+    build: ./backend
+    ports:
+      - "4000:4000"
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@db:5432/postgres}
+      PORT: 4000
+      CORS_ORIGIN: http://localhost:5173
+      HOLD_DURATION_MINUTES: 7
+      SWEEPER_INTERVAL_SECONDS: 30
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: http://localhost:4000
+    ports:
+      - "5173:80"
+    depends_on:
+      backend:
+        condition: service_started
+
+volumes:
+  db-data:

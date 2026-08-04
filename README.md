@@ -220,10 +220,6 @@ the train picker, the page header, and the booking panel.
   session, or ownership check on who can confirm/cancel a given booking.
   Real deployment would need this; it's out of scope for demonstrating the
   concurrency model, which is the point of the exercise.
-- **Docker / containerized deployment.** Deliberately deferred to a
-  follow-up pass. Everything runs as local processes (`npm run dev`) against
-  the hosted Supabase database purely through `DATABASE_URL`, so
-  containerizing later doesn't require touching any application code.
 - **Extra Credit features** (seat map polish, admin view, waitlisting,
   etc.) — not built in this pass. Priority was a correct, fully-working core
   flow (schema → API → concurrency proof → frontend) over a longer feature
@@ -262,6 +258,49 @@ are never returned to the client. Booking responses include
 — looked up from `trip_stop`, never stored on `booking` itself.
 
 ## Setup (clean machine)
+
+### Docker — one command
+
+Prerequisites: Docker Desktop (or Docker Engine + Compose v2 — `docker compose`,
+not the legacy hyphenated `docker-compose`).
+
+```bash
+docker compose up --build
+```
+
+That's the whole setup. This one command:
+
+- Starts a local Postgres 16 container with `btree_gist` available — the
+  same extension the hosted Supabase instance below uses, since nothing in
+  the schema is actually Supabase-specific.
+- Runs the migration, then the seed, as one-shot jobs before anything else
+  starts. Both are idempotent (`backend/migrations`, `backend/scripts/seed.ts`),
+  so re-running `docker compose up` is always safe — a second run logs `No
+  migrations to run!` and `0 created, N already existed.` instead of erroring
+  or duplicating data.
+- Starts the API on `http://localhost:4000` and the built frontend on
+  `http://localhost:5173`.
+
+Open `http://localhost:5173` and book a seat.
+
+**To point at a real Supabase project instead of the local container** —
+e.g. to demo against the actual hosted database — create a `.env` file at
+the repo root (see `.env.example`) with your Supabase `DATABASE_URL`, then
+run `docker compose up --build` again. The local `db` container still
+starts but simply goes unused, which is harmless.
+
+**One thing Docker can't automate away:** `import.meta.env.VITE_API_URL` is
+baked into the frontend's compiled JS at *build* time, because that bundle
+runs in your browser on the host machine, not inside the Docker network — it
+has to point at a host-reachable address (`localhost:4000`), never an
+internal service name like `backend:4000`. If you need the frontend to
+reach a backend on a different port or host, rebuild it with a different
+build arg:
+```bash
+docker compose build frontend --build-arg VITE_API_URL=http://localhost:5000
+```
+
+### Without Docker (local processes)
 
 Prerequisites: Node.js 18+, a [Supabase](https://supabase.com) account.
 
@@ -325,12 +364,13 @@ winning booking so re-running the script doesn't leave holds behind.
 ## Repo layout
 
 ```
-backend/    Express API, migrations, seed script
-frontend/   React + Vite frontend
+backend/    Express API, migrations, seed script, Dockerfile
+frontend/   React + Vite frontend, Dockerfile (multi-stage: build -> nginx)
 scripts/    Black-box concurrency test
+docker-compose.yml   Local Postgres + migrate/seed (one-shot) + backend + frontend
 ```
 
 ## Not yet done
 
-Docker/containerized setup and any Extra Credit features are deliberately
-not part of this pass — see "Scoped out" above.
+Extra Credit features are deliberately not part of this pass — see
+"Scoped out" above.
