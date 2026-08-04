@@ -3,6 +3,7 @@ import "./App.css";
 import { ApiError, api } from "./api";
 import type { Availability, AvailabilitySeat, Booking, Passenger, Station, Trip } from "./api";
 import { PassengerForm } from "./components/PassengerForm";
+import { TripPicker } from "./components/TripPicker";
 import { StationPicker } from "./components/StationPicker";
 import { SeatMap } from "./components/SeatMap";
 import { BookingPanel } from "./components/BookingPanel";
@@ -12,8 +13,16 @@ interface ActiveBooking {
   seatNumber: string;
 }
 
+function todayDateString(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
 function App() {
-  const [trip, setTrip] = useState<Trip | null>(null);
+  const [selectedDate, setSelectedDate] = useState<string>(todayDateString());
+  const [trips, setTrips] = useState<Trip[]>([]);
+  const [tripsLoading, setTripsLoading] = useState(false);
+  const [selectedTripId, setSelectedTripId] = useState<number | null>(null);
+
   const [stations, setStations] = useState<Station[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -26,40 +35,76 @@ function App() {
   const [availabilityLoading, setAvailabilityLoading] = useState(false);
 
   const [activeBooking, setActiveBooking] = useState<ActiveBooking | null>(null);
+  const [bookingInFlight, setBookingInFlight] = useState(false);
   const [conflictMessage, setConflictMessage] = useState<string | null>(null);
   const [bookingError, setBookingError] = useState<string | null>(null);
 
-  // Load the (single, seeded) trip and its route's stations on mount.
+  // Reload the trip list whenever the date filter changes (empty = all
+  // upcoming trips). Keeps the currently-selected trip if it's still in the
+  // new list, otherwise falls back to the first trip.
   useEffect(() => {
     (async () => {
+      setTripsLoading(true);
       try {
-        const trips = await api.getTrips();
-        if (trips.length === 0) {
-          setLoadError("No trips found. Run `npm run seed` in backend/ first.");
-          return;
+        const list = await api.getTrips(selectedDate ? { date: selectedDate } : undefined);
+        setTrips(list);
+        setSelectedTripId((current) => {
+          if (current !== null && list.some((t) => t.id === current)) return current;
+          return list[0]?.id ?? null;
+        });
+        if (list.length === 0) {
+          setLoadError(
+            selectedDate
+              ? `No trips found on ${selectedDate}. Try a different date or run \`npm run seed\` in backend/.`
+              : "No trips found. Run `npm run seed` in backend/ first."
+          );
+        } else {
+          setLoadError(null);
         }
-        const firstTrip = trips[0];
-        setTrip(firstTrip);
-        const stationList = await api.getStations(firstTrip.routeId);
-        setStations(stationList);
       } catch (err) {
-        setLoadError(err instanceof Error ? err.message : "Failed to load trip data");
+        setLoadError(err instanceof Error ? err.message : "Failed to load trips");
+      } finally {
+        setTripsLoading(false);
       }
     })();
-  }, []);
+  }, [selectedDate]);
+
+  const selectedTrip = trips.find((t) => t.id === selectedTripId) ?? null;
+
+  // When the selected trip changes, load its route's stations and reset
+  // every downstream choice — origin/destination sequences and seat
+  // availability are specific to one trip.
+  useEffect(() => {
+    setOriginId(null);
+    setDestinationId(null);
+    setAvailability(null);
+    setActiveBooking(null);
+    if (!selectedTrip) {
+      setStations([]);
+      return;
+    }
+    (async () => {
+      try {
+        const stationList = await api.getStations(selectedTrip.routeId);
+        setStations(stationList);
+      } catch (err) {
+        setLoadError(err instanceof Error ? err.message : "Failed to load stations");
+      }
+    })();
+  }, [selectedTrip?.id, selectedTrip?.routeId]);
 
   const refreshAvailability = useCallback(async () => {
-    if (!trip || originId === null || destinationId === null) return;
+    if (!selectedTrip || originId === null || destinationId === null) return;
     setAvailabilityLoading(true);
     try {
-      const result = await api.getAvailability(trip.id, originId, destinationId);
+      const result = await api.getAvailability(selectedTrip.id, originId, destinationId);
       setAvailability(result);
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : "Failed to load seat availability");
     } finally {
       setAvailabilityLoading(false);
     }
-  }, [trip, originId, destinationId]);
+  }, [selectedTrip, originId, destinationId]);
 
   useEffect(() => {
     setAvailability(null);
@@ -67,18 +112,29 @@ function App() {
   }, [refreshAvailability]);
 
   const handleSelectSeat = async (seat: AvailabilitySeat) => {
-    if (!trip || !passenger || originId === null || destinationId === null) return;
+    // Guard against a burst of clicks on different seats landing before the
+    // first request's response disables the seat map: without this, each
+    // click fires an independent POST /api/bookings for a *different* seat
+    // (no conflict, since they don't overlap each other), all of which
+    // succeed — but React state can only track one as `activeBooking`, so
+    // the rest become invisible holds nobody can see or release from the
+    // UI. Setting this synchronously, before the `await`, closes that
+    // window; the seat map's `disabled` prop reflects it immediately.
+    if (bookingInFlight) return;
+    if (!selectedTrip || !passenger || originId === null || destinationId === null) return;
+    setBookingInFlight(true);
     setConflictMessage(null);
     setBookingError(null);
     try {
       const booking = await api.createBooking({
-        tripId: trip.id,
+        tripId: selectedTrip.id,
         seatId: seat.seatId,
         passengerId: passenger.id,
         originStationId: originId,
         destinationStationId: destinationId,
       });
       setActiveBooking({ booking, seatNumber: seat.seatNumber });
+      await refreshAvailability();
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
         setConflictMessage(
@@ -88,6 +144,8 @@ function App() {
       } else {
         setBookingError(err instanceof Error ? err.message : "Failed to create booking");
       }
+    } finally {
+      setBookingInFlight(false);
     }
   };
 
@@ -121,10 +179,10 @@ function App() {
     <div className="app">
       <header className="app-header">
         <h1>Colombo Fort &ndash; Badulla</h1>
-        {trip && (
+        {selectedTrip && (
           <p className="trip-meta">
-            {trip.trainName} {trip.trainNumber ? `(${trip.trainNumber})` : ""} &middot; departs{" "}
-            {trip.departureTime.slice(0, 5)} &middot; {trip.serviceDate}
+            {selectedTrip.trainName} {selectedTrip.trainNumber ? `(${selectedTrip.trainNumber})` : ""} &middot;
+            departs {selectedTrip.departureTime.slice(0, 5)} &middot; {selectedTrip.serviceDate}
           </p>
         )}
       </header>
@@ -133,6 +191,15 @@ function App() {
 
       <div className="app-body">
         <aside className="sidebar">
+          <TripPicker
+            trips={trips}
+            loading={tripsLoading}
+            selectedDate={selectedDate}
+            onChangeDate={setSelectedDate}
+            selectedTripId={selectedTripId}
+            onChangeTrip={setSelectedTripId}
+          />
+
           <PassengerForm
             passenger={passenger}
             onPassengerCreated={setPassenger}
@@ -185,7 +252,7 @@ function App() {
               reservedCoaches={reservedCoaches}
               unreservedCoaches={unreservedCoaches}
               onSelectSeat={handleSelectSeat}
-              disabled={!passenger || activeBooking?.booking.status === "held"}
+              disabled={!passenger || bookingInFlight || activeBooking?.booking.status === "held"}
             />
           )}
 

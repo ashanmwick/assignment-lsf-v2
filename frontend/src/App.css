@@ -80,6 +80,16 @@
   opacity: 0.5;
 }
 
+.date-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.date-row input[type="date"] {
+  flex: 1;
+}
+
 .passenger-panel {
   display: flex;
   align-items: center;

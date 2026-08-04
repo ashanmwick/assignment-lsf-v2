@@ -96,7 +96,13 @@ export interface Booking {
 export const api = {
   getStations: (routeId: number) => request<Station[]>(`/api/routes/${routeId}/stations`),
 
-  getTrips: () => request<Trip[]>("/api/trips"),
+  getTrips: (filters?: { routeId?: number; date?: string }) => {
+    const params = new URLSearchParams();
+    if (filters?.routeId !== undefined) params.set("routeId", String(filters.routeId));
+    if (filters?.date) params.set("date", filters.date);
+    const query = params.toString();
+    return request<Trip[]>(`/api/trips${query ? `?${query}` : ""}`);
+  },
 
   getAvailability: (tripId: number, originStationId: number, destinationStationId: number) =>
     request<Availability>(
