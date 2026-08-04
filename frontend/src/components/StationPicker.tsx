@@ -11,10 +11,13 @@ interface Props {
 export function StationPicker({ stations, originId, destinationId, onChangeOrigin, onChangeDestination }: Props) {
   const origin = stations.find((s) => s.id === originId) ?? null;
 
-  // Destination must come after origin along the route — enforced here in
-  // the UI, and again server-side by the trip_stop composite FK / sequence
-  // check when the booking is created.
-  const destinationOptions = origin ? stations.filter((s) => s.sequence > origin.sequence) : stations;
+  // Trips can run in either direction (southbound Colombo Fort -> Badulla,
+  // or northbound the other way — each a genuinely separate trip with its
+  // own trip_stop sequence), so any station pair is a selectable leg here;
+  // only the same station twice is excluded. Which pairs actually have a
+  // train serving them is determined by the leg-filtered trip list, not by
+  // this picker.
+  const destinationOptions = origin ? stations.filter((s) => s.id !== origin.id) : stations;
 
   return (
     <>
@@ -25,12 +28,8 @@ export function StationPicker({ stations, originId, destinationId, onChangeOrigi
           onChange={(e) => {
             const id = e.target.value ? Number(e.target.value) : null;
             onChangeOrigin(id);
-            if (destinationId !== null) {
-              const dest = stations.find((s) => s.id === destinationId);
-              const newOrigin = stations.find((s) => s.id === id);
-              if (dest && newOrigin && dest.sequence <= newOrigin.sequence) {
-                onChangeDestination(null);
-              }
+            if (destinationId !== null && destinationId === id) {
+              onChangeDestination(null);
             }
           }}
         >
